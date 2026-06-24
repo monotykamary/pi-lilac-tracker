@@ -159,11 +159,15 @@ interface BinActivity {
   count: number;
   byTier: Map<number, number>;
   byModel: Map<string, number>;
+  // discount_percent of every observation, per model — so the sidebar can
+  // show the discounts each model had at this local-noon time period instead
+  // of live-now stats.
+  byModelDiscounts: Map<string, number[]>;
   states: Set<string>;
 }
 
 function emptyBin(): BinActivity {
-  return { count: 0, byTier: new Map(), byModel: new Map(), states: new Set() };
+  return { count: 0, byTier: new Map(), byModel: new Map(), byModelDiscounts: new Map(), states: new Set() };
 }
 
 // For 'all' (multi-tier) mode, a bin's color is its dominant tier (the one
@@ -175,6 +179,16 @@ function dominantTier(b: BinActivity): number {
     if (n > domN) { domN = n; domTier = t; }
   }
   return domTier;
+}
+
+// Most frequently observed discount_percent for a model within a bin — the
+// representative discount that model had at this local-noon time period.
+function modeDiscount(values: number[]): number {
+  const counts = new Map<number, number>();
+  for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
+  let best = values[0], bestN = -1;
+  for (const [v, n] of counts) if (n > bestN) { bestN = n; best = v; }
+  return best;
 }
 
 // Attribute every filtered observation to BOTH (a) the longitude band at
@@ -210,6 +224,9 @@ function buildActivity(
       c.count += 1;
       c.byTier.set(tier, (c.byTier.get(tier) ?? 0) + 1);
       c.byModel.set(id, (c.byModel.get(id) ?? 0) + 1);
+      let cD = c.byModelDiscounts.get(id);
+      if (!cD) { cD = []; c.byModelDiscounts.set(id, cD); }
+      cD.push(p.snapshot.discount_percent);
       c.states.add(p.snapshot.supply_state);
       if (c.count > maxCountCols) maxCountCols = c.count;
       // civil timezone at local noon (civil mode). Same observation, binned
@@ -221,6 +238,9 @@ function buildActivity(
       b.count += 1;
       b.byTier.set(tier, (b.byTier.get(tier) ?? 0) + 1);
       b.byModel.set(id, (b.byModel.get(id) ?? 0) + 1);
+      let bD = b.byModelDiscounts.get(id);
+      if (!bD) { bD = []; b.byModelDiscounts.set(id, bD); }
+      bD.push(p.snapshot.discount_percent);
       b.states.add(p.snapshot.supply_state);
       if (b.count > maxCountTz) maxCountTz = b.count;
     }
@@ -272,8 +292,10 @@ export default function DiscountMercator({
     : null;
 
   // Latest snapshot per tracked model — drives the sidebar's resting
-  // "live now" overview (shown when nothing is hovered) and enriches the
-  // hover model-breakdown with current TPS / discount / uptime.
+  // "live now" overview (shown when nothing is hovered, i.e. no time period
+  // selected). When a longitude / civil timezone is hovered (a time period
+  // selected) the sidebar instead shows the discounts observed at that noon,
+  // from each bin's byModelDiscounts (see buildActivity).
   const latestPerModel = useMemo(
     () => TRACKED_MODELS.map((id) => {
       const pts = timeSeries[id] || [];
@@ -282,12 +304,6 @@ export default function DiscountMercator({
     }),
     [timeSeries],
   );
-  const latestSnapById = useMemo(() => {
-    const m = new Map<string, ModelSnapshot | null>();
-    for (const { id, snap } of latestPerModel) m.set(id, snap);
-    return m;
-  }, [latestPerModel]);
-
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const svg = svgRef.current;
     if (!svg) return;
@@ -653,9 +669,10 @@ export default function DiscountMercator({
             wrap, no dead vertical band), and flex:1 grows it to fill all the
             width the maxWidth-clamped map leaves unused. On hover: hovered
             longitude / civil-timezone detail + discount activity + live TPS
-            for the models with activity there. At rest: a "live now" overview
-            of every tracked model's latest snapshot so the panel is never
-            sparse. */}
+            for the models with activity there — the discounts observed at
+            that local-noon time period, not live stats. At rest (no time
+            period selected): a "live now" overview of every tracked model's
+            latest snapshot so the panel is never sparse. */}
         <aside className="mercator-side">
           <div
             className="mercator-side-inner"
@@ -721,9 +738,11 @@ export default function DiscountMercator({
                   per-zone observation counts with live TPS / discount / supply. */}
               {activeEntries.length > 0 && (
                 <div className="tooltip-section" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  <span className="tooltip-header">models here · live now</span>
+                  <span className="tooltip-header">models here · this noon</span>
                   {activeEntries.map(([id, n]) => {
-                    const snap = latestSnapById.get(id);
+                    const discounts = activeBin!.byModelDiscounts.get(id) ?? [];
+                    const dom = discounts.length ? modeDiscount(discounts) : 0;
+                    const distinct = [...new Set(discounts)].sort((a, b) => b - a);
                     const color = MODEL_COLORS[id];
                     return (
                       <div key={id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -732,16 +751,15 @@ export default function DiscountMercator({
                             <span className="tooltip-dot-lg" style={{ background: color }} />
                             <span className="text-[11px] font-semibold text-zinc-800 dark:text-zinc-200">{MODEL_LABELS[id]}</span>
                           </span>
-                          <span className="tooltip-row-value" style={{ color: snap ? discountColor(snap.discount_percent) : undefined }}>
-                            {snap ? `${snap.discount_percent}%` : `×${n}`}
+                          <span className="tooltip-row-value" style={{ color: discounts.length ? discountColor(dom) : undefined }}>
+                            {discounts.length ? `${dom}% off` : `×${n}`}
                           </span>
                         </div>
-                        {snap && (
-                          <div className="tooltip-row-flex">
-                            <span className="tooltip-row-label">{fmtTps(snap.tps)} · {snap.supply_state}</span>
-                            <span className="tooltip-row-value">up {fmtUptime(snap.uptime_pct)}</span>
-                          </div>
-                        )}
+                        <div className="tooltip-row-flex">
+                          <span className="tooltip-row-label">
+                            ×{n} at this noon{distinct.length > 1 ? ` · ${distinct.join('/')}%` : ''}
+                          </span>
+                        </div>
                       </div>
                     );
                   })}
