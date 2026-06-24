@@ -1,0 +1,50 @@
+{
+  "name": "pi-lilac-tracker",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
+    "dev:server": "tsx watch server/index.ts",
+    "dev:web": "vite",
+    "build": "tsc -b && vite build",
+    "gen:world": "node scripts/gen-world-land.cjs",
+    "lint": "eslint .",
+    "typecheck": "tsc -b",
+    "start": "node server/index.ts"
+  },
+  "dependencies": {
+    "@phosphor-icons/react": "^2.1.10",
+    "clsx": "^2.1.1",
+    "compression": "^1.7.5",
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "framer-motion": "^12.39.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "recharts": "^3.8.1",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.0",
+    "@types/compression": "^1.7.5",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.3",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "autoprefixer": "^10.5.0",
+    "concurrently": "^9.2.0",
+    "d3-geo": "^3.1.1",
+    "topojson-client": "^3.1.0",
+    "eslint": "^10.4.0",
+    "postcss": "^8.5.15",
+    "tailwindcss": "^4.3.0",
+    "tsx": "^4.20.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
+  },
+  "packageManager": "pnpm@11.6.0"
+}
