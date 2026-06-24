@@ -98,6 +98,28 @@ function fmtLon(lon: number): string {
   return `${s}${Math.abs(v).toFixed(1).replace(/\.0$/, '')}°`;
 }
 
+// Map a solar-noon offset (hours, normalized to (-12, 12]) to the nearest
+// civil-timezone index. At UTC time T the longitude at local noon is
+// L=(12-T)·15°, which is exactly the reference meridian of the civil offset
+// O=12-T experiencing local noon — so binning observations by civil offset
+// (civil mode) vs by 2.5° band (longitude mode) is the same data, differently
+// grouped. Wraparound at ±12 handles antimeridian zones (+13/+14/+12:45 ≡
+// -11/-10/-11.25 on the 24h ring).
+const NOON_OFFSET_TO_TZ = (() => {
+  const offs = TIMEZONE_OFFSETS;
+  return (noonOffset: number) => {
+    let best = 0, bestD = Infinity;
+    for (let i = 0; i < offs.length; i++) {
+      // circular distance on the 24h ring (offsets span -12..+14, so the raw
+      // gap can exceed 24 — reduce mod 24 then take the shorter way round)
+      let d = Math.abs(offs[i] - noonOffset) % 24;
+      d = Math.min(d, 24 - d);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  };
+})();
+
 // Discount tiers selectable as a filter. 0% is excluded: a 1× credit
 // multiplier is full price, not a discount. Default 75% (surplus tier).
 const FILTER_TIERS = [25, 50, 75] as const;
@@ -110,28 +132,45 @@ const REGIONS: { lon: number; label: string }[] = [
   { lon: 95, label: 'ASIA' },
 ];
 
-interface ColActivity {
+interface BinActivity {
   count: number;
   byTier: Map<number, number>;
   byModel: Map<string, number>;
   states: Set<string>;
 }
 
-// Attribute every filtered observation to the longitude band at local noon at
-// the moment it was recorded. Returns per-band totals + the max (for opacity
-// normalization) + per-band tier/model breakdowns (for 'all' mode + tooltip).
+function emptyBin(): BinActivity {
+  return { count: 0, byTier: new Map(), byModel: new Map(), states: new Set() };
+}
+
+// For 'all' (multi-tier) mode, a bin's color is its dominant tier (the one
+// most frequently observed there).
+function dominantTier(b: BinActivity): number {
+  let domTier: number = FILTER_TIERS[0], domN = -1;
+  for (const t of FILTER_TIERS) {
+    const n = b.byTier.get(t) ?? 0;
+    if (n > domN) { domN = n; domTier = t; }
+  }
+  return domTier;
+}
+
+// Attribute every filtered observation to BOTH (a) the longitude band at
+// solar noon (longitude mode) and (b) the civil timezone at local noon
+// (civil mode). The two are the same observations, differently grouped: the
+// solar-noon longitude L=(12-T)·15° is the reference meridian of the civil
+// offset O=12-T, so civil mode bins by offset territory, longitude mode bins
+// by 2.5° band. Returns per-bin totals + each mode's max (for opacity
+// normalization) + per-bin tier/model breakdowns (for 'all' mode + tooltip).
 // `discFilter` is either a single tier or 'all'. Tier 0 (1× = full price) is
 // always excluded — it isn't a discount.
 function buildActivity(
   timeSeries: Record<string, DiscountPoint[]>,
   discFilter: number | 'all',
   selectedModel: string | null,
-): { cols: ColActivity[]; maxCount: number; hasData: boolean } {
-  const cols: ColActivity[] = Array.from({ length: COLS }, () => ({
-    count: 0, byTier: new Map<number, number>(), byModel: new Map<string, number>(), states: new Set<string>(),
-  }));
-  let maxCount = 1;
-  let any = false;
+): { cols: BinActivity[]; tzBins: BinActivity[]; maxCountCols: number; maxCountTz: number; hasData: boolean } {
+  const cols: BinActivity[] = Array.from({ length: COLS }, emptyBin);
+  const tzBins: BinActivity[] = Array.from({ length: TIMEZONE_OFFSETS.length }, emptyBin);
+  let maxCountCols = 1, maxCountTz = 1, any = false;
   const models = selectedModel ? [selectedModel] : TRACKED_MODELS;
   for (const id of models) {
     const pts = timeSeries[id] || [];
@@ -142,16 +181,28 @@ function buildActivity(
       any = true;
       const d = new Date(p.timestamp);
       const utcH = d.getUTCHours() + d.getUTCMinutes() / 60 + d.getUTCSeconds() / 3600;
+      // longitude band at solar noon (longitude mode)
       const col = colForNoonMeridian(utcH);
       const c = cols[col];
       c.count += 1;
       c.byTier.set(tier, (c.byTier.get(tier) ?? 0) + 1);
       c.byModel.set(id, (c.byModel.get(id) ?? 0) + 1);
       c.states.add(p.snapshot.supply_state);
-      if (c.count > maxCount) maxCount = c.count;
+      if (c.count > maxCountCols) maxCountCols = c.count;
+      // civil timezone at local noon (civil mode). Same observation, binned
+      // by civil offset instead of by 2.5° band.
+      const noonOff = (((12 - utcH) % 24) + 24) % 24;
+      const noonNorm = noonOff > 12 ? noonOff - 24 : noonOff; // (-12, 12]
+      const ti = NOON_OFFSET_TO_TZ(noonNorm);
+      const b = tzBins[ti];
+      b.count += 1;
+      b.byTier.set(tier, (b.byTier.get(tier) ?? 0) + 1);
+      b.byModel.set(id, (b.byModel.get(id) ?? 0) + 1);
+      b.states.add(p.snapshot.supply_state);
+      if (b.count > maxCountTz) maxCountTz = b.count;
     }
   }
-  return { cols, maxCount, hasData: any };
+  return { cols, tzBins, maxCountCols, maxCountTz, hasData: any };
 }
 
 export default function DiscountMercator({
@@ -168,10 +219,15 @@ export default function DiscountMercator({
   const [hoverColIdx, setHoverColIdx] = useState<number | null>(null);
   const [hoverTz, setHoverTz] = useState<number | null>(null);
   const [discFilter, setDiscFilter] = useState<number | 'all'>('all');
+  // How to bin & paint discount activity: by civil-timezone territory (the
+  // political reality — China +8 spans 73°E–135°E) or by 2.5° longitude
+  // bands at solar noon (the smoother scientific span). Same data, different
+  // bins; the activity memo doesn't depend on this, so toggling is instant.
+  const [geoMode, setGeoMode] = useState<'civil' | 'longitude'>('civil');
 
   const focused = !!selectedModel;
 
-  const { cols, maxCount, hasData } = useMemo(
+  const { cols, tzBins, maxCountCols, maxCountTz, hasData } = useMemo(
     () => buildActivity(timeSeries, discFilter, selectedModel),
     [timeSeries, discFilter, selectedModel],
   );
@@ -237,11 +293,16 @@ export default function DiscountMercator({
   const tzXRef = xForLon(tzRefLon);
   const tzRefVisible =
     tzIdx != null && tzXRef >= TIMEZONE_X_LO[tzIdx] - 8 && tzXRef <= TIMEZONE_X_HI[tzIdx] + 8;
-  const hoverEntries = hoverCol
-    ? [...hoverCol.byModel.entries()].sort((a, b) => b[1] - a[1])
+  // The bin whose activity the tooltip reports: in civil mode the hovered
+  // timezone's aggregate, in longitude mode the hovered band's. Both are
+  // derived from the same observations, just differently grouped.
+  const hoverTzBin = tzIdx != null ? tzBins[tzIdx] : null;
+  const activeBin = geoMode === 'civil' ? hoverTzBin : hoverCol;
+  const activeEntries = activeBin
+    ? [...activeBin.byModel.entries()].sort((a, b) => b[1] - a[1])
     : [];
-  const hoverTierEntries = hoverCol
-    ? FILTER_TIERS.map((t) => ({ t, n: hoverCol.byTier.get(t) ?? 0 }))
+  const activeTierEntries = activeBin
+    ? FILTER_TIERS.map((t) => ({ t, n: activeBin.byTier.get(t) ?? 0 }))
         .filter((e) => e.n > 0)
         .sort((a, b) => b.n - a.n)
     : [];
@@ -260,27 +321,52 @@ export default function DiscountMercator({
               Discount Timezones
             </h2>
             <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-1">
-              {discFilter === 'all'
-                ? 'continents tinted by which discount tier dominates at each longitude\'s local noon (brighter = more frequent)'
-                : 'continents tinted by how often the selected tier was live when that longitude was at local noon'}
+              {geoMode === 'civil'
+                ? (discFilter === 'all'
+                    ? 'continents tinted by which discount tier dominates in each civil timezone at its local noon (brighter = more frequent)'
+                    : 'continents tinted by how often the selected tier was live when each civil timezone was at local noon')
+                : (discFilter === 'all'
+                    ? 'continents tinted by which discount tier dominates at each longitude\'s local noon (brighter = more frequent)'
+                    : 'continents tinted by how often the selected tier was live when that longitude was at local noon')}
             </p>
           </div>
         </div>
-        {latest && selectedModel && (
-          <span
-            className="supply-badge"
-            style={{
-              backgroundColor: `${discountColor(latest.discount_percent)}18`,
-              color: discountColor(latest.discount_percent),
-            }}
-          >
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[10px] text-zinc-500 dark:text-zinc-400 shrink-0">view</span>
+            <div className="flex items-center gap-0.5 rounded-lg p-0.5" style={{ border: '1px solid var(--border)' }}>
+              {(['civil', 'longitude'] as const).map((m) => {
+                const on = geoMode === m;
+                return (
+                  <button
+                    key={m}
+                    onClick={() => setGeoMode(m)}
+                    className="metric-mono text-[10px] font-semibold rounded-md px-2 py-1 transition-all"
+                    style={on ? { color: '#fff', backgroundColor: '#52525b' } : { color: '#71717a' }}
+                    aria-pressed={on}
+                  >
+                    {m}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          {latest && selectedModel && (
             <span
-              className="w-1.5 h-1.5 rounded-full shrink-0"
-              style={{ backgroundColor: discountColor(latest.discount_percent) }}
-            />
-            {MODEL_LABELS[selectedModel]} · {latest.discount_percent}% OFF
-          </span>
-        )}
+              className="supply-badge"
+              style={{
+                backgroundColor: `${discountColor(latest.discount_percent)}18`,
+                color: discountColor(latest.discount_percent),
+              }}
+            >
+              <span
+                className="w-1.5 h-1.5 rounded-full shrink-0"
+                style={{ backgroundColor: discountColor(latest.discount_percent) }}
+              />
+              {MODEL_LABELS[selectedModel]} · {latest.discount_percent}% OFF
+            </span>
+          )}
+        </div>
       </div>
 
       {/* model selector chips */}
@@ -375,26 +461,17 @@ export default function DiscountMercator({
           ))}
 
           {/* THE DATA — discount activity painted onto the continents, clipped
-              to land. Single tier: each active longitude band gets a wash of
-              that tier's color, opacity = how often it recurred. 'all' mode:
-              each band is colored by its dominant tier (most frequent there),
-              opacity = total frequency — so all tier colors appear at once. */}
-          {hasData && (
+              to land. Two binning modes (toggled above): longitude = 2.5°
+              bands at solar noon (smooth); civil = real timezone territories
+              at local noon (political reality). Single tier: each active bin
+              gets a wash of that tier's color, opacity = how often it recurred.
+              'all' mode: each bin is colored by its dominant tier, opacity =
+              total frequency — so all tier colors appear at once. */}
+          {hasData && geoMode === 'longitude' && (
             <g clipPath={`url(#${gid}-land)`}>
               {cols.map((c, col) => {
                 if (c.count === 0) return null;
-                let fill: string;
-                if (discFilter === 'all') {
-                  let domTier: number = FILTER_TIERS[0];
-                  let domN = -1;
-                  for (const t of FILTER_TIERS) {
-                    const n = c.byTier.get(t) ?? 0;
-                    if (n > domN) { domN = n; domTier = t; }
-                  }
-                  fill = discountColor(domTier);
-                } else {
-                  fill = discountColor(discFilter);
-                }
+                const fill = discFilter === 'all' ? discountColor(dominantTier(c)) : discountColor(discFilter);
                 return (
                   <rect
                     key={`t${col}`}
@@ -403,7 +480,24 @@ export default function DiscountMercator({
                     width={COL_W + 0.6}
                     height={PLOT_H}
                     fill={fill}
-                    opacity={0.2 + 0.7 * (c.count / maxCount)}
+                    opacity={0.2 + 0.7 * (c.count / maxCountCols)}
+                  />
+                );
+              })}
+            </g>
+          )}
+          {hasData && geoMode === 'civil' && (
+            <g clipPath={`url(#${gid}-land)`}>
+              {tzBins.map((b, idx) => {
+                if (b.count === 0) return null;
+                const fill = discFilter === 'all' ? discountColor(dominantTier(b)) : discountColor(discFilter);
+                return (
+                  <path
+                    key={`tzd${idx}`}
+                    d={TIMEZONE_PATHS[idx]}
+                    fill={fill}
+                    opacity={0.2 + 0.7 * (b.count / maxCountTz)}
+                    style={{ pointerEvents: 'none' }}
                   />
                 );
               })}
@@ -488,6 +582,7 @@ export default function DiscountMercator({
                 stroke="none"
                 style={{ pointerEvents: 'all' }}
                 onMouseEnter={() => setHoverTz(idx)}
+                onMouseLeave={() => setHoverTz(null)}
               />
             ))}
           </g>
@@ -628,19 +723,25 @@ export default function DiscountMercator({
                 <span className="tooltip-row-value">ref {fmtLon(tzRefLon)}</span>
               </div>
             )}
-            {(!hoverCol || hoverCol.count === 0) ? (
+            {(!activeBin || activeBin.count === 0) ? (
               <p className="tooltip-footer">
-                {discFilter === 'all'
-                  ? 'No discounts recorded when this longitude was at noon.'
-                  : `No ${discFilter}% off recorded when this longitude was at noon.`}
+                {activeBin == null
+                  ? 'Ocean — no civil timezone here.'
+                  : geoMode === 'civil'
+                    ? (discFilter === 'all'
+                        ? 'No discounts recorded when this timezone was at noon.'
+                        : `No ${discFilter}% off recorded when this timezone was at noon.`)
+                    : (discFilter === 'all'
+                        ? 'No discounts recorded when this longitude was at noon.'
+                        : `No ${discFilter}% off recorded when this longitude was at noon.`)}
               </p>
             ) : discFilter === 'all' ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <div className="tooltip-row-flex" style={{ marginBottom: 2 }}>
-                  <span className="tooltip-row-label">×{hoverCol.count} observations</span>
-                  <span className="tooltip-row-value">{[...hoverCol.states].join('/')}</span>
+                  <span className="tooltip-row-label">×{activeBin.count} observations</span>
+                  <span className="tooltip-row-value">{[...activeBin.states].join('/')}</span>
                 </div>
-                {hoverTierEntries.map(({ t, n }) => (
+                {activeTierEntries.map(({ t, n }) => (
                   <div key={t} className="tooltip-row-flex">
                     <span className="tooltip-row-item">
                       <span className="tooltip-dot" style={{ background: discountColor(t) }} />
@@ -653,10 +754,10 @@ export default function DiscountMercator({
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 <div className="tooltip-row-flex" style={{ marginBottom: 2 }}>
-                  <span className="tooltip-row-label">{discFilter}% off · ×{hoverCol.count}</span>
-                  <span className="tooltip-row-value">{[...hoverCol.states].join('/')}</span>
+                  <span className="tooltip-row-label">{discFilter}% off · ×{activeBin.count}</span>
+                  <span className="tooltip-row-value">{[...activeBin.states].join('/')}</span>
                 </div>
-                {hoverEntries.map(([id, n]) => (
+                {activeEntries.map(([id, n]) => (
                   <div key={id} className="tooltip-row-flex">
                     <span className="tooltip-row-item">
                       <span className="tooltip-dot" style={{ background: MODEL_COLORS[id] }} />
