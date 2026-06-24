@@ -26,6 +26,7 @@
   --accent: #0891b2;
   --accent-light: #06b6d4;
   --accent-muted: #164e63;
+  --ember: #dc2626;
 
   /* Layout + scale tokens — centralize the magic numbers so a .pill and an
      in-card metric can never accidentally share a scale again. */
@@ -47,6 +48,7 @@
   --accent: #06b6d4;
   --accent-light: #22d3ee;
   --accent-muted: #164e63;
+  --ember: #ef4444;
 }
 
 html {
@@ -257,6 +259,14 @@ body {
 
   .dark .mercator-axis-cap {
     fill: #71717a;
+  }
+
+  .mercator-tz-label {
+    font-family: 'Geist Mono', 'JetBrains Mono', monospace;
+    font-size: 9px;
+    font-weight: 700;
+    fill: #ffffff;
+    letter-spacing: 0.02em;
   }
 
   .supply-badge {

@@ -68,6 +68,88 @@ function hhmmz(hours: number): string {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}z`;
 }
 
+// ── Civil timezones ───────────────────────────────────────────────────────────
+// The real-world UTC offsets everyone politically agreed on — including the
+// messy fractional ones (India +5:30, Nepal +5:45, Iran +3:30, Newfoundland
+// −3:30…). Their reference meridian L = offset × 15° lands BETWEEN the clean
+// 15° graticule grid (82.5°E, 86.25°E…), and the timezone's longitude band
+// (Voronoi cell between adjacent reference meridians) has off-grid edges for
+// fractional zones — the "agreed but weird to look at" payoff.
+//
+// On hover, the band under the cursor is highlighted CLIPPED TO LAND, so its
+// edges follow the actual coastlines (curves, not a straight reference line).
+// Antimeridian-crossing zones (Chatham +12:45, Tonga +13, Kiribati +14) are
+// omitted: their reference meridians wrap to −150°/−165° and collide with
+// Hawaii/Samoa on the flat −180..180 map. This is a reference overlay only —
+// discount data stays attributed to the solar-noon longitude (re-keying by
+// civil offset would collapse to a single meridian, since civil noon is a
+// global instant, not per-longitude).
+const TIMEZONES: { m: number; names: string }[] = [
+  { m: -720, names: 'Baker & Howland Is.' },
+  { m: -660, names: 'American Samoa' },
+  { m: -600, names: 'Hawaii (HST)' },
+  { m: -570, names: 'Marquesas Is.' },
+  { m: -540, names: 'Alaska (AKST)' },
+  { m: -480, names: 'Pacific (PT)' },
+  { m: -420, names: 'Mountain (MT)' },
+  { m: -360, names: 'Central (CT)' },
+  { m: -300, names: 'Eastern (ET)' },
+  { m: -240, names: 'Atlantic (AT)' },
+  { m: -210, names: 'Newfoundland' },
+  { m: -180, names: 'Argentina, Brazil' },
+  { m: -120, names: 'S. Georgia' },
+  { m:  -60, names: 'Azores, Cape Verde' },
+  { m:    0, names: 'UK, Iceland, Ghana' },
+  { m:   60, names: 'CET — Germany, France' },
+  { m:  120, names: 'EET — Egypt, Greece' },
+  { m:  180, names: 'Moscow, Saudi Arabia' },
+  { m:  210, names: 'Iran' },
+  { m:  240, names: 'UAE, Mauritius' },
+  { m:  270, names: 'Afghanistan' },
+  { m:  300, names: 'Pakistan, Uzbekistan' },
+  { m:  330, names: 'India, Sri Lanka' },
+  { m:  345, names: 'Nepal' },
+  { m:  360, names: 'Bangladesh, Bhutan' },
+  { m:  390, names: 'Myanmar, Cocos Is.' },
+  { m:  420, names: 'Indochina, W. Indonesia' },
+  { m:  480, names: 'China, Singapore, PH' },
+  { m:  525, names: 'Eucla (AU)' },
+  { m:  540, names: 'Japan, Korea' },
+  { m:  570, names: 'Central Australia' },
+  { m:  600, names: 'E. Australia' },
+  { m:  630, names: 'Lord Howe Is.' },
+  { m:  660, names: 'Solomon Is.' },
+  { m:  720, names: 'New Zealand, Fiji' },
+];
+// Reference meridian (deg) for zone i: L = offset_minutes × 0.25.
+const tzRefLon = (i: number) => TIMEZONES[i].m * 0.25;
+// Longitude band for zone i = Voronoi cell between adjacent reference
+// meridians. Edges sit at midpoints; for fractional zones these land off the
+// 15° grid (India → 78.75°–84.375°, Nepal → 84.375°–88.125°). First/last
+// zones clamp to the map edges (±180°).
+const TZ_BANDS: { lo: number; hi: number }[] = TIMEZONES.map((_, i) => ({
+  lo: i === 0 ? -180 : (tzRefLon(i - 1) + tzRefLon(i)) / 2,
+  hi: i === TIMEZONES.length - 1 ? 180 : (tzRefLon(i) + tzRefLon(i + 1)) / 2,
+}));
+// Which timezone's band does this longitude fall in? (lon in [-180, 180).)
+function tzIndexForLon(lon: number): number {
+  for (let i = 0; i < TZ_BANDS.length; i++) {
+    if (lon >= TZ_BANDS[i].lo && lon < TZ_BANDS[i].hi) return i;
+  }
+  return lon >= 180 ? TZ_BANDS.length - 1 : 0;
+}
+function fmtOffset(m: number): string {
+  if (m === 0) return 'UTC';
+  const sign = m > 0 ? '+' : '-';
+  const am = Math.abs(m);
+  return `${sign}${Math.floor(am / 60)}:${(am % 60).toString().padStart(2, '0')}`;
+}
+function fmtLon(lon: number): string {
+  const v = Math.round(lon * 100) / 100;
+  const s = v > 0 ? '+' : v < 0 ? '-' : '';
+  return `${s}${Math.abs(v).toFixed(1).replace(/\.0$/, '')}°`;
+}
+
 // Discount tiers selectable as a filter. 0% is excluded: a 1× credit
 // multiplier is full price, not a discount. Default 75% (surplus tier).
 const FILTER_TIERS = [25, 50, 75] as const;
@@ -181,6 +263,10 @@ export default function DiscountMercator({
   const hoverCol = hover ? cols[hover.col] : null;
   const hoverLon = hover ? lonForCol(hover.col) : 0;
   const hoverNoon = hover ? noonUtcForLon(hoverLon) : 0;
+  const hoverTzIndex = hover ? tzIndexForLon(hoverLon) : -1;
+  const hoverTz = hoverTzIndex >= 0 ? TIMEZONES[hoverTzIndex] : null;
+  const hoverTzBand = hoverTzIndex >= 0 ? TZ_BANDS[hoverTzIndex] : null;
+  const hoverTzRef = hoverTzIndex >= 0 ? tzRefLon(hoverTzIndex) : 0;
   const hoverEntries = hoverCol
     ? [...hoverCol.byModel.entries()].sort((a, b) => b[1] - a[1])
     : [];
@@ -381,6 +467,43 @@ export default function DiscountMercator({
             <animate attributeName="opacity" values="1;0.55;1" dur="2.2s" repeatCount="indefinite" />
           </circle>
 
+          {/* hovered civil-timezone territory — the band under the cursor,
+              clipped to land so its edges follow the actual coastlines
+              (curves, not a straight reference line). The crisp ember meridian
+              at L = offset × 15° lands BETWEEN the 15° graticule lines for
+              fractional zones (India +5:30 → 82.5°E, Nepal +5:45 → 86.25°E).
+              Coexists with the dashed cyan solar-noon meridian: civil vs solar. */}
+          {hover && hoverTz && hoverTzBand && (
+            <g clipPath={`url(#${gid}-land)`} style={{ pointerEvents: 'none' }}>
+              <rect
+                x={xForLon(hoverTzBand.lo)}
+                y={MT}
+                width={Math.max(0, xForLon(hoverTzBand.hi) - xForLon(hoverTzBand.lo))}
+                height={PLOT_H}
+                style={{ fill: 'var(--ember)' }}
+                opacity={0.16}
+              />
+              <line
+                x1={xForLon(hoverTzRef)} y1={MT}
+                x2={xForLon(hoverTzRef)} y2={MT + PLOT_H}
+                style={{ stroke: 'var(--ember)' }}
+                strokeWidth={1.5}
+                opacity={0.9}
+              />
+              <circle
+                cx={xForLon(hoverTzRef)} cy={eqY} r={3.5}
+                style={{ fill: 'var(--ember)', stroke: 'var(--surface)' }}
+                strokeWidth={1.5}
+              />
+            </g>
+          )}
+          {hover && hoverTz && (
+            <g transform={`translate(${Math.max(ML + 26, Math.min(ML + PLOT_W - 26, xForLon(hoverTzRef)))}, ${MT + 13})`} style={{ pointerEvents: 'none' }}>
+              <rect x={-24} y={-9} width={48} height={16} rx={4} style={{ fill: 'var(--ember)' }} />
+              <text x={0} y={2.5} textAnchor="middle" className="mercator-tz-label">{fmtOffset(hoverTz.m)}</text>
+            </g>
+          )}
+
           {/* frame */}
           <rect x={ML} y={MT} width={PLOT_W} height={PLOT_H} rx={5} fill="none" className="mercator-frame-stroke" />
 
@@ -507,6 +630,15 @@ export default function DiscountMercator({
                 local noon {hhmmz(hoverNoon)}
               </span>
             </div>
+            {hoverTz && (
+              <div className="tooltip-row-flex" style={{ marginBottom: 6 }}>
+                <span className="tooltip-row-item">
+                  <span className="tooltip-dot" style={{ background: 'var(--ember)' }} />
+                  <span className="tooltip-row-label">{fmtOffset(hoverTz.m)} · {hoverTz.names}</span>
+                </span>
+                <span className="tooltip-row-value">ref {fmtLon(hoverTzRef)}</span>
+              </div>
+            )}
             {(!hoverCol || hoverCol.count === 0) ? (
               <p className="tooltip-footer">
                 {discFilter === 'all'
