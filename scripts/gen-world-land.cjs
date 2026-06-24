@@ -16,8 +16,8 @@ const d3 = require('d3-geo');
 const { feature } = require('topojson-client');
 
 // ---- projection constants (mirror the component) ----
-const ML = 40, MR = 12, MT = 12, MB = 26;
-const VIEW_W = 1000;
+const ML = 12, MR = 12, MT = 12, MB = 26;
+const VIEW_W = 972;
 const PLOT_W = VIEW_W - ML - MR;            // 948
 const LAT_CLIP = 60;                         // crop poles — compact, fits viewport
 const yMerc = (latDeg) => Math.log(Math.tan(Math.PI / 4 + (latDeg * Math.PI / 180) / 2));
@@ -29,8 +29,7 @@ const VIEW_H = MT + PLOT_H + MB;
 // translate so lon 0 → centre; lat 0 → vertical centre; lat ±60 → top/bottom.
 // d3.geoMercator's DEFAULT preclip is clipAntimeridian, which cuts wrapping
 // polygons at ±180° before projecting (the fix for the bridge strip).
-// clipExtent then trims everything outside the plot rect (handles the ±80°
-// pole clip in screen space and any residual edge bleed).
+// clipExtent then trims everything outside the plot rect.
 const SCALE = PLOT_W / (2 * Math.PI);
 const projection = d3.geoMercator()
   .scale(SCALE)

@@ -19,8 +19,8 @@ const path = require('path');
 const d3 = require('d3-geo');
 
 // ---- projection constants (mirror gen-world-land.cjs) ----
-const ML = 40, MR = 12, MT = 12, MB = 26;
-const VIEW_W = 1000;
+const ML = 12, MR = 12, MT = 12, MB = 26;
+const VIEW_W = 972;
 const PLOT_W = VIEW_W - ML - MR;            // 948
 const LAT_CLIP = 60;
 const yMerc = (latDeg) => Math.log(Math.tan(Math.PI / 4 + (latDeg * Math.PI / 180) / 2));
@@ -119,10 +119,11 @@ for (const f of fc.features) {
   const z = f.properties.zone;
   if (z == null || Number.isNaN(z)) continue;
   if (!byOffset.has(z)) byOffset.set(z, []);
+  const g = simplifyGeom(f.geometry, SIMPLIFY_TOL);
   byOffset.get(z).push({
     type: 'Feature',
     properties: { places: f.properties.places },
-    geometry: simplifyGeom(f.geometry, SIMPLIFY_TOL),
+    geometry: g,
   });
 }
 
@@ -135,8 +136,19 @@ const xHi = [];
 for (const z of offsets) {
   const feats = byOffset.get(z);
   const collection = { type: 'FeatureCollection', features: feats };
-  const pathStr = d3.geoPath(projection)(collection);
-  paths.push(pathStr || '');
+  let pathStr = d3.geoPath(projection)(collection) || '';
+  // d3's antimeridian preclip can produce a vertex with NaN y, and near-pole
+  // rings project to absurd y (±thousands), when a timezone territory touches
+  // the pole (Russia/Chukchi). clipExtent trims the rendered path but the raw
+  // d string keeps the bad numbers, making the whole <path d> invalid (console
+  // error + no render). Clamp NaN/extreme coords to the top frame (MT); keeps
+  // every subpath + its vertex count so polygon closure survives, and the
+  // clamped sliver lands on the ocean strip where the land clip hides it.
+  pathStr = pathStr.replace(/NaN/g, String(MT)).replace(
+    /-?\d+(?:\.\d+)?/g,
+    (n) => { const v = parseFloat(n); return !isFinite(v) || Math.abs(v) > 2000 ? String(MT) : n; },
+  );
+  paths.push(pathStr);
   placesArr.push(cleanPlaces(feats));
   refLons.push(Math.round(wrapLon(z * 15) * 1000) / 1000);
   // Projected bbox x-range — lets the component draw the reference meridian

@@ -98,6 +98,18 @@ function fmtLon(lon: number): string {
   return `${s}${Math.abs(v).toFixed(1).replace(/\.0$/, '')}°`;
 }
 
+// Right-sidebar stat formatters. TPS / TTFB / uptime come straight off the
+// latest ModelSnapshot; null becomes an em dash (provider didn't expose it).
+function fmtTps(tps: number | null): string {
+  return tps != null ? `${tps.toFixed(1)} t/s` : '—';
+}
+function fmtTtfb(s: number | null): string {
+  return s != null ? `${s.toFixed(2)}s` : '—';
+}
+function fmtUptime(u: number | null): string {
+  return u != null ? `${u.toFixed(1)}%` : '—';
+}
+
 // Map a solar-noon offset (hours, normalized to (-12, 12]) to the nearest
 // civil-timezone index. At UTC time T the longitude at local noon is
 // L=(12-T)·15°, which is exactly the reference meridian of the civil offset
@@ -210,12 +222,10 @@ export default function DiscountMercator({
 }: DiscountMercatorProps) {
   const gid = 'merc-' + useId().replace(/:/g, '');
   const svgRef = useRef<SVGSVGElement>(null);
-  const tipRef = useRef<HTMLDivElement>(null);
-  // Hover is split so the map doesn't re-render on every mousemove:
-  //  - hoverColIdx (state): the longitude column under the cursor. Changes
-  //    only when crossing a 2.5° band boundary, so re-renders are rare.
-  //  - tooltip position: written directly to the DOM via tipRef inside
-  //    onMove — no React state, no re-render, fully smooth.
+  // Hover resolves the longitude column under the cursor into state. It
+  // re-renders only when crossing a 2.5° band boundary, so the map stays
+  // smooth. The detail renders in the right sidebar (React panel), not an
+  // imperative floating tooltip — no DOM writes, no position math.
   const [hoverColIdx, setHoverColIdx] = useState<number | null>(null);
   const [hoverTz, setHoverTz] = useState<number | null>(null);
   const [discFilter, setDiscFilter] = useState<number | 'all'>('all');
@@ -250,35 +260,36 @@ export default function DiscountMercator({
     ? (timeSeries[selectedModel]?.[timeSeries[selectedModel].length - 1]?.snapshot ?? null)
     : null;
 
+  // Latest snapshot per tracked model — drives the sidebar's resting
+  // "live now" overview (shown when nothing is hovered) and enriches the
+  // hover model-breakdown with current TPS / discount / uptime.
+  const latestPerModel = useMemo(
+    () => TRACKED_MODELS.map((id) => {
+      const pts = timeSeries[id] || [];
+      const last = pts.length ? pts[pts.length - 1] : null;
+      return { id, snap: last?.snapshot ?? null };
+    }),
+    [timeSeries],
+  );
+  const latestSnapById = useMemo(() => {
+    const m = new Map<string, ModelSnapshot | null>();
+    for (const { id, snap } of latestPerModel) m.set(id, snap);
+    return m;
+  }, [latestPerModel]);
+
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
     const svg = svgRef.current;
     if (!svg) return;
     const r = svg.getBoundingClientRect();
     const scale = r.width / VIEW_W;
     const xLocal = (e.clientX - r.left) / scale;
-    const tip = tipRef.current;
     if (xLocal < ML || xLocal > ML + PLOT_W) {
       if (hoverColIdx !== null) setHoverColIdx(null);
-      if (tip) tip.style.display = 'none';
       return;
     }
     const col = Math.min(COLS - 1, Math.max(0, Math.floor((xLocal - ML) / COL_W)));
     if (col !== hoverColIdx) setHoverColIdx(col);
-    // Position the tooltip directly on the DOM — no state, so the map doesn't
-    // re-render while the cursor moves within a single column.
-    if (tip) {
-      const TW = 252, TH = 200;
-      let tx = e.clientX + 14;
-      let ty = e.clientY + 14;
-      if (tx + TW > window.innerWidth - 8) tx = e.clientX - TW - 14;
-      if (ty + TH > window.innerHeight - 8) ty = e.clientY - TH - 14;
-      tip.style.display = 'block';
-      tip.style.left = tx + 'px';
-      tip.style.top = ty + 'px';
-    }
   };
-
-  const tipW = 252;
   const hoverCol = hoverColIdx != null ? cols[hoverColIdx] : null;
   const hoverLon = hoverColIdx != null ? lonForCol(hoverColIdx) : 0;
   const hoverNoon = hoverColIdx != null ? noonUtcForLon(hoverLon) : 0;
@@ -332,6 +343,21 @@ export default function DiscountMercator({
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end">
+          {latest && selectedModel && (
+            <span
+              className="supply-badge"
+              style={{
+                backgroundColor: `${discountColor(latest.discount_percent)}18`,
+                color: discountColor(latest.discount_percent),
+              }}
+            >
+              <span
+                className="w-1.5 h-1.5 rounded-full shrink-0"
+                style={{ backgroundColor: discountColor(latest.discount_percent) }}
+              />
+              {MODEL_LABELS[selectedModel]} · {latest.discount_percent}% OFF
+            </span>
+          )}
           <div className="flex items-center gap-1.5">
             <span className="text-[10px] text-zinc-500 dark:text-zinc-400 shrink-0">view</span>
             <div className="flex items-center gap-0.5 rounded-lg p-0.5" style={{ border: '1px solid var(--border)' }}>
@@ -351,21 +377,6 @@ export default function DiscountMercator({
               })}
             </div>
           </div>
-          {latest && selectedModel && (
-            <span
-              className="supply-badge"
-              style={{
-                backgroundColor: `${discountColor(latest.discount_percent)}18`,
-                color: discountColor(latest.discount_percent),
-              }}
-            >
-              <span
-                className="w-1.5 h-1.5 rounded-full shrink-0"
-                style={{ backgroundColor: discountColor(latest.discount_percent) }}
-              />
-              {MODEL_LABELS[selectedModel]} · {latest.discount_percent}% OFF
-            </span>
-          )}
         </div>
       </div>
 
@@ -413,7 +424,10 @@ export default function DiscountMercator({
         )}
       </div>
 
-      <div className="relative flex justify-center">
+      <div
+        className="mercator-layout"
+        style={{ '--map-max': `calc(70vh * ${VIEW_W} / ${VIEW_H})` } as React.CSSProperties}
+      >
         <svg
           ref={svgRef}
           viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
@@ -421,8 +435,8 @@ export default function DiscountMercator({
           style={{
             display: 'block',
             width: '100%',
+            height: 'auto',
             aspectRatio: `${VIEW_W} / ${VIEW_H}`,
-            maxWidth: `calc(70vh * ${VIEW_W} / ${VIEW_H})`,
           }}
           onMouseMove={onMove}
           onMouseLeave={() => { setHoverColIdx(null); setHoverTz(null); }}
@@ -545,8 +559,6 @@ export default function DiscountMercator({
             <g style={{ pointerEvents: 'none' }}>
               <g clipPath={`url(#${gid}-land)`}>
                 <path d={TIMEZONE_PATHS[tzIdx]} style={{ fill: 'var(--ember)' }} opacity={0.12} />
-                <path d={TIMEZONE_PATHS[tzIdx]} fill="none" style={{ stroke: 'var(--surface)' }} strokeWidth={2.6} opacity={0.6} />
-                <path d={TIMEZONE_PATHS[tzIdx]} fill="none" style={{ stroke: 'var(--ember)' }} strokeWidth={1.1} opacity={0.95} />
                 {tzRefVisible && (
                   <>
                     <line
@@ -560,6 +572,15 @@ export default function DiscountMercator({
                   </>
                 )}
               </g>
+              {/* Outline is unclipped on purpose. The land clip is 110m but the
+                  territory polygons are 10m, so their coastlines differ —
+                  clipping the stroke ate the coastal segment and outlines
+                  vanished for ocean-bordering countries (landlocked ones
+                  survived). Render the stroke unclipped so it follows the
+                  real 10m coast; the fill above stays clipped so the faint
+                  tint doesn't bleed into the ocean. */}
+              <path d={TIMEZONE_PATHS[tzIdx]} fill="none" style={{ stroke: 'var(--surface)' }} strokeWidth={2.6} opacity={0.6} />
+              <path d={TIMEZONE_PATHS[tzIdx]} fill="none" style={{ stroke: 'var(--ember)' }} strokeWidth={1.1} opacity={0.95} />
               {tzRefVisible && (
                 <g transform={`translate(${Math.max(ML + 26, Math.min(ML + PLOT_W - 26, tzXRef))}, ${MT + 13})`}>
                   <rect x={-24} y={-9} width={48} height={16} rx={4} style={{ fill: 'var(--ember)' }} />
@@ -615,6 +636,150 @@ export default function DiscountMercator({
             longitude = where it was local noon · west ← → east
           </text>
         </svg>
+
+        {/* right sidebar — a flex sibling of the SVG so align-items: stretch
+            pins its top/bottom borders to the map's exact box (no separate
+            wrap, no dead vertical band), and flex:1 grows it to fill all the
+            width the maxWidth-clamped map leaves unused. On hover: hovered
+            longitude / civil-timezone detail + discount activity + live TPS
+            for the models with activity there. At rest: a "live now" overview
+            of every tracked model's latest snapshot so the panel is never
+            sparse. */}
+        <aside className="mercator-side">
+          <div
+            className="mercator-side-inner"
+            style={{
+              // Align the bordered panel exactly with the map frame's
+              // top/bottom borders, not the SVG's outer box. The SVG is
+              // VIEW_H tall but its frame sits at y=MT..MT+PLOT_H (the MT
+              // strip above is empty sky, MB=VIEW_H-MT-PLOT_H below holds
+              // longitude axis labels). Percentages here resolve against
+              // .mercator-side's height (the stretched grid cell = the map's
+              // rendered height), so they track the frame precisely.
+              top: `${(MT / VIEW_H) * 100}%`,
+              height: `${(PLOT_H / VIEW_H) * 100}%`,
+            }}
+          >
+          {hoverColIdx != null ? (
+            <>
+              <div className="tooltip-row-flex" style={{ marginBottom: 8 }}>
+                <span className="tooltip-header">
+                  {hoverLon >= 0 ? '+' : ''}{hoverLon.toFixed(0)}° longitude
+                </span>
+                <span className="tooltip-header-unit">local noon {hhmmz(hoverNoon)}</span>
+              </div>
+              {tzIdx != null && tzPlaces != null && (
+                <div className="tooltip-row-flex" style={{ marginBottom: 8 }}>
+                  <span className="tooltip-row-item">
+                    <span className="tooltip-dot" style={{ background: 'var(--ember)' }} />
+                    <span className="tooltip-row-label">{fmtOffset(tzOffset!)} · {tzPlaces}</span>
+                  </span>
+                  <span className="tooltip-row-value">ref {fmtLon(tzRefLon)}</span>
+                </div>
+              )}
+              {(!activeBin || activeBin.count === 0) ? (
+                <p className="tooltip-footer">
+                  {activeBin == null
+                    ? 'Ocean — no civil timezone here.'
+                    : geoMode === 'civil'
+                      ? (discFilter === 'all'
+                          ? 'No discounts recorded when this timezone was at noon.'
+                          : `No ${discFilter}% off recorded when this timezone was at noon.`)
+                      : (discFilter === 'all'
+                          ? 'No discounts recorded when this longitude was at noon.'
+                          : `No ${discFilter}% off recorded when this longitude was at noon.`)}
+                </p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  <div className="tooltip-row-flex" style={{ marginBottom: 2 }}>
+                    <span className="tooltip-row-label">×{activeBin.count} observations</span>
+                    <span className="tooltip-row-value">{[...activeBin.states].join('/')}</span>
+                  </div>
+                  {discFilter === 'all' && activeTierEntries.map(({ t, n }) => (
+                    <div key={t} className="tooltip-row-flex">
+                      <span className="tooltip-row-item">
+                        <span className="tooltip-dot" style={{ background: discountColor(t) }} />
+                        <span className="tooltip-row-label">{t}% off</span>
+                      </span>
+                      <span className="tooltip-row-value">×{n}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* models with activity here — latest stats enrich the sparse
+                  per-zone observation counts with live TPS / discount / supply. */}
+              {activeEntries.length > 0 && (
+                <div className="tooltip-section" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  <span className="tooltip-header">models here · live now</span>
+                  {activeEntries.map(([id, n]) => {
+                    const snap = latestSnapById.get(id);
+                    const color = MODEL_COLORS[id];
+                    return (
+                      <div key={id} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                        <div className="tooltip-row-flex">
+                          <span className="tooltip-row-item">
+                            <span className="tooltip-dot-lg" style={{ background: color }} />
+                            <span className="text-[11px] font-semibold text-zinc-800 dark:text-zinc-200">{MODEL_LABELS[id]}</span>
+                          </span>
+                          <span className="tooltip-row-value" style={{ color: snap ? discountColor(snap.discount_percent) : undefined }}>
+                            {snap ? `${snap.discount_percent}%` : `×${n}`}
+                          </span>
+                        </div>
+                        {snap && (
+                          <div className="tooltip-row-flex">
+                            <span className="tooltip-row-label">{fmtTps(snap.tps)} · {snap.supply_state}</span>
+                            <span className="tooltip-row-value">up {fmtUptime(snap.uptime_pct)}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="tooltip-row-flex" style={{ marginBottom: 10 }}>
+                <span className="tooltip-header">Live now</span>
+                <span className="tooltip-header-unit">
+                  noon {hhmmz(nowNoon.noonUtc)} · {nowNoon.lon >= 0 ? '+' : ''}{nowNoon.lon.toFixed(0)}°
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                {latestPerModel.map(({ id, snap }) => {
+                  const color = MODEL_COLORS[id];
+                  return (
+                    <div key={id} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                      <div className="tooltip-row-flex">
+                        <span className="tooltip-row-item">
+                          <span className="tooltip-dot-lg" style={{ background: color }} />
+                          <span className="text-[11px] font-semibold text-zinc-800 dark:text-zinc-200">{MODEL_LABELS[id]}</span>
+                        </span>
+                        {snap && (
+                          <span className="tooltip-row-value" style={{ color: discountColor(snap.discount_percent) }}>
+                            {snap.discount_percent}% off
+                          </span>
+                        )}
+                      </div>
+                      {snap ? (
+                        <div className="tooltip-row-flex">
+                          <span className="tooltip-row-label">{fmtTps(snap.tps)} · {fmtTtfb(snap.ttfb_seconds)} · {snap.supply_state}</span>
+                          <span className="tooltip-row-value">up {fmtUptime(snap.uptime_pct)}</span>
+                        </div>
+                      ) : (
+                        <span className="tooltip-footer">no data yet</span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="tooltip-footer tooltip-section">
+                hover the map to inspect a longitude or civil timezone at its local noon.
+              </p>
+            </>
+          )}
+          </div>
+        </aside>
       </div>
 
       {/* controls — discount tier filter */}
@@ -700,77 +865,6 @@ export default function DiscountMercator({
         )}
       </div>
 
-      <div
-        ref={tipRef}
-        style={{ position: 'fixed', left: 0, top: 0, width: tipW, zIndex: 50, pointerEvents: 'none' }}
-      >
-        {hoverColIdx != null && (
-        <div className="glass-panel" style={{ padding: '10px 12px' }}>
-            <div className="tooltip-row-flex" style={{ marginBottom: 6 }}>
-              <span className="tooltip-header">
-                {hoverLon >= 0 ? '+' : ''}{hoverLon.toFixed(0)}° longitude
-              </span>
-              <span className="tooltip-header-unit">
-                local noon {hhmmz(hoverNoon)}
-              </span>
-            </div>
-            {tzIdx != null && tzPlaces != null && (
-              <div className="tooltip-row-flex" style={{ marginBottom: 6 }}>
-                <span className="tooltip-row-item">
-                  <span className="tooltip-dot" style={{ background: 'var(--ember)' }} />
-                  <span className="tooltip-row-label">{fmtOffset(tzOffset!)} · {tzPlaces}</span>
-                </span>
-                <span className="tooltip-row-value">ref {fmtLon(tzRefLon)}</span>
-              </div>
-            )}
-            {(!activeBin || activeBin.count === 0) ? (
-              <p className="tooltip-footer">
-                {activeBin == null
-                  ? 'Ocean — no civil timezone here.'
-                  : geoMode === 'civil'
-                    ? (discFilter === 'all'
-                        ? 'No discounts recorded when this timezone was at noon.'
-                        : `No ${discFilter}% off recorded when this timezone was at noon.`)
-                    : (discFilter === 'all'
-                        ? 'No discounts recorded when this longitude was at noon.'
-                        : `No ${discFilter}% off recorded when this longitude was at noon.`)}
-              </p>
-            ) : discFilter === 'all' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <div className="tooltip-row-flex" style={{ marginBottom: 2 }}>
-                  <span className="tooltip-row-label">×{activeBin.count} observations</span>
-                  <span className="tooltip-row-value">{[...activeBin.states].join('/')}</span>
-                </div>
-                {activeTierEntries.map(({ t, n }) => (
-                  <div key={t} className="tooltip-row-flex">
-                    <span className="tooltip-row-item">
-                      <span className="tooltip-dot" style={{ background: discountColor(t) }} />
-                      <span className="tooltip-row-label">{t}% off</span>
-                    </span>
-                    <span className="tooltip-row-value">×{n}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <div className="tooltip-row-flex" style={{ marginBottom: 2 }}>
-                  <span className="tooltip-row-label">{discFilter}% off · ×{activeBin.count}</span>
-                  <span className="tooltip-row-value">{[...activeBin.states].join('/')}</span>
-                </div>
-                {activeEntries.map(([id, n]) => (
-                  <div key={id} className="tooltip-row-flex">
-                    <span className="tooltip-row-item">
-                      <span className="tooltip-dot" style={{ background: MODEL_COLORS[id] }} />
-                      <span className="tooltip-row-label">{MODEL_LABELS[id]}</span>
-                    </span>
-                    <span className="tooltip-row-value">×{n}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
