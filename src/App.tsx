@@ -13,6 +13,7 @@ import StateTimeline from './components/StateTimeline';
 import CandlestickCard from './components/CandlestickCard';
 import DataSummary from './components/DataSummary';
 import DiscountMercator from './components/DiscountMercator';
+import DiscountAdvisory from './components/DiscountAdvisory';
 
 // Tailwind class registry — ensures utilities from component files are generated
 // since Tailwind v4's scanner doesn't discover files in src/components/
@@ -176,13 +177,16 @@ export default function App() {
             />
 
             <section>
-              <DiscountMercator
-                timeSeries={modelTimeSeries}
-                selectedModel={selectedModel}
-                onSelectModel={(id) => setSelectedModel(prev => (prev === id ? null : id))}
-              />
+              <DiscountAdvisory timeSeries={modelTimeSeries} />
+              <div className="mt-6">
+                <DiscountMercator
+                  timeSeries={modelTimeSeries}
+                  selectedModel={selectedModel}
+                  onSelectModel={(id) => setSelectedModel(prev => (prev === id ? null : id))}
+                />
+              </div>
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-3 leading-relaxed">
-                The world's longitudes <em>are</em> time of day — but not yours: each longitude's <span className="font-medium text-zinc-700 dark:text-zinc-300">local-noon time</span> is the UTC moment the sun crosses it (noon at −120° happens at 20:00z, at 0° at 12:00z, at +120° at 04:00z). Lilac's discounts are global events keyed to UTC, so the question this map answers is: <em>where on earth is it local noon when the discount fires?</em> Each snapshot is attributed to the longitude at local noon at that UTC moment, then painted onto the actual continents — so the map IS the data, not a backdrop. Default view is <span className="font-medium text-zinc-700 dark:text-zinc-300">all</span> tiers (each longitude colored by its dominant tier); pick a single tier to isolate it. The Americas light up, because Lilac's discounts cluster in the UTC afternoon/evening = the Americas' daytime. The dashed line is the meridian at local noon right now, sweeping west as the earth rotates. Continents tint as days accrue.
+                The world's longitudes <em>are</em> time of day — but not yours: each longitude's <span className="font-medium text-zinc-700 dark:text-zinc-300">local-noon time</span> is the UTC moment the sun crosses it (noon at −120° happens at 20:00z, at 0° at 12:00z, at +120° at 04:00z). Lilac's discounts are global events keyed to UTC, so the question this map answers is: <em>where on earth is it local noon when the discount fires?</em> Each snapshot is attributed to the longitude at local noon at that UTC moment, then painted onto the actual continents — so the map IS the data, not a backdrop. Default view is <span className="font-medium text-zinc-700 dark:text-zinc-300">all</span> tiers (each longitude colored by its dominant tier); pick a single tier to isolate it. The Americas light up, because Lilac's discounts cluster in the UTC afternoon/evening = the Americas' daytime. The dashed line is the meridian at local noon right now, sweeping west as the earth rotates. The <span className="font-medium text-zinc-700 dark:text-zinc-300">day/night</span> overlay shades the live night side (longitudes &gt;90° from that noon meridian) with a soft twilight band — the same sweep, made visible as light and dark across the continents; toggle it off for a pure-data view. Continents tint as days accrue.
               </p>
             </section>
 

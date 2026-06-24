@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, useId, useEffect } from 'react';
-import { GlobeSimple, Funnel, Sun } from '@phosphor-icons/react';
+import { GlobeSimple, Funnel, Sun, Moon } from '@phosphor-icons/react';
 import {
   TRACKED_MODELS, MODEL_LABELS, MODEL_COLORS, discountColor,
 } from '../types';
@@ -265,6 +265,13 @@ export default function DiscountMercator({
   // bands at solar noon (the smoother scientific span). Same data, different
   // bins; the activity memo doesn't depend on this, so toggling is instant.
   const [geoMode, setGeoMode] = useState<'civil' | 'longitude'>('civil');
+  // Day/night overlay on the map: shades the night side of earth (the
+  // longitudes >90° from the subsolar meridian), sweeping west as the planet
+  // rotates. Civil longitude approximation — consistent with the map's
+  // longitude-of-noon model (no seasonal terminator curve). On by default;
+  // toggle off for a pure-data view. Painted UNDER the discount data so the
+  // data stays vivid while the ambient cycle reads behind it.
+  const [dayNight, setDayNight] = useState(true);
 
   const focused = !!selectedModel;
 
@@ -286,6 +293,24 @@ export default function DiscountMercator({
     lon = ((lon + 180) % 360 + 360) % 360 - 180;
     return { lon, x: xForLon(lon), noonUtc: utcH };
   }, [now]);
+
+  // Night-side columns for the day/night overlay. Each 2.5° longitude band
+  // gets a nightness 0..1 from its angular distance to the subsolar meridian,
+  // with a soft twilight ramp across the ±12° band around the 90° terminator.
+  // Wraps correctly at the antimeridian via the 360-d reduction.
+  const nightCols = useMemo(() => {
+    const out: { x: number; w: number; op: number }[] = [];
+    const noon = nowNoon.lon;
+    for (let col = 0; col < COLS; col++) {
+      const lon = lonForCol(col);
+      let d = Math.abs(lon - noon);
+      d = Math.min(d, 360 - d);                 // angular distance to subsolar (0..180)
+      const night = Math.max(0, Math.min(1, (d - 78) / 24));  // twilight 78°→102°
+      if (night <= 0.01) continue;
+      out.push({ x: ML + col * COL_W, w: COL_W + 0.6, op: night * 0.5 });
+    }
+    return out;
+  }, [nowNoon.lon]);
 
   const latest = selectedModel
     ? (timeSeries[selectedModel]?.[timeSeries[selectedModel].length - 1]?.snapshot ?? null)
@@ -498,6 +523,22 @@ export default function DiscountMercator({
               x1={ML} y1={yForLat(lat)} x2={ML + PLOT_W} y2={yForLat(lat)}
               className="mercator-graticule"
               opacity={lat === 0 ? 0.5 : 0.3}
+            />
+          ))}
+
+          {/* day / night overlay — the night side of earth, sweeping west as the
+              planet rotates. Civil longitude approximation: night where the
+              longitude is >90° from the subsolar meridian (local solar hour
+              outside 06–18), with a soft twilight gradient. Painted over ocean
+              + base land but UNDER the discount data, so the data stays vivid
+              while the ambient cycle reads behind it. Toggle off for pure data. */}
+          {dayNight && nightCols.map((c, i) => (
+            <rect
+              key={`dn${i}`}
+              x={c.x} y={MT} width={c.w} height={PLOT_H}
+              className="mercator-night"
+              opacity={c.op}
+              style={{ pointerEvents: 'none' }}
             />
           ))}
 
@@ -848,11 +889,33 @@ export default function DiscountMercator({
             );
           })}
         </div>
-        <div className="flex items-center gap-1.5 ml-auto">
-          <Sun size={12} weight="bold" className="text-accent shrink-0" />
-          <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
-            noon now · {hhmmz(nowNoon.noonUtc)} at {nowNoon.lon >= 0 ? '+' : ''}{nowNoon.lon.toFixed(0)}°
-          </span>
+        <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-1.5">
+            <Sun size={12} weight="bold" className="text-accent shrink-0" />
+            <span className="text-[10px] text-zinc-600 dark:text-zinc-400">
+              noon now · {hhmmz(nowNoon.noonUtc)} at {nowNoon.lon >= 0 ? '+' : ''}{nowNoon.lon.toFixed(0)}°
+            </span>
+          </div>
+          <button
+            onClick={() => setDayNight(v => !v)}
+            className="flex items-center gap-1 rounded-md px-2 py-1 transition-colors"
+            style={{
+              border: `1px solid ${dayNight ? 'var(--accent)' : 'var(--border)'}`,
+              backgroundColor: dayNight ? 'rgba(8,145,178,0.08)' : 'transparent',
+            }}
+            aria-pressed={dayNight}
+            title={dayNight ? 'Day/night overlay on — click to hide' : 'Day/night overlay off — click to show'}
+          >
+            {dayNight
+              ? <Sun size={12} weight="bold" className="text-accent" />
+              : <Moon size={12} weight="bold" className="text-zinc-400 dark:text-zinc-500" />}
+            <span
+              className="text-[10px] font-medium"
+              style={{ color: dayNight ? 'var(--accent)' : 'var(--text-secondary)' }}
+            >
+              day/night
+            </span>
+          </button>
         </div>
       </div>
 

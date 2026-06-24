@@ -224,6 +224,14 @@ body {
     fill: #36474f;
   }
 
+  .mercator-night {
+    fill: #0b1220;
+  }
+
+  .dark .mercator-night {
+    fill: #05080d;
+  }
+
   .mercator-graticule {
     stroke: rgba(8, 145, 178, 0.20);
     stroke-width: 1;
@@ -598,6 +606,54 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
+
+  /* Discount Advisory — day/night 24h dial */
+  .advisory-dial-marker {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    /* The sun/moon hand glides between 10s ticks rather than jumping. */
+    transition: left 10s linear, top 10s linear;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .advisory-sun-glow {
+    animation: advisory-pulse 2.6s ease-in-out infinite;
+  }
+
+  .advisory-moon-glow {
+    filter: drop-shadow(0 0 5px rgba(148, 163, 184, 0.55));
+  }
+
+  @keyframes advisory-pulse {
+    0%, 100% { filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.55)); }
+    50% { filter: drop-shadow(0 0 10px rgba(245, 158, 11, 0.9)); }
+  }
+
+  @keyframes advisory-twinkle {
+    0%, 100% { opacity: 0.25; }
+    50% { opacity: 0.9; }
+  }
+
+  .advisory-star {
+    animation: advisory-twinkle 3s ease-in-out infinite;
+  }
+
+  /* Day/night dial sky stops — class-based so dark mode can swap to a muted
+     twilight palette instead of the bright pastel day used in light mode. */
+  .adv-stop-day-top { stop-color: #bfdbfe; }
+  .adv-stop-day-mid { stop-color: #e0f2fe; }
+  .adv-stop-day-low { stop-color: #fef9c3; }
+  .adv-stop-night-top { stop-color: #1e293b; }
+  .adv-stop-night-low { stop-color: #0b1220; }
+  .dark .adv-stop-day-top { stop-color: #3b4a63; }
+  .dark .adv-stop-day-mid { stop-color: #2f3d54; }
+  .dark .adv-stop-day-low { stop-color: #46402d; }
+  .dark .adv-stop-night-top { stop-color: #18212e; }
+  .dark .adv-stop-night-low { stop-color: #0a111c; }
 }
 
 @layer utilities {
@@ -627,5 +683,10 @@ body {
   }
   .dark .scrollbar-thin::-webkit-scrollbar-thumb {
     background-color: rgba(113, 113, 122, 0.3);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .advisory-dial-marker { transition: none; }
+    .advisory-sun-glow, .advisory-star { animation: none; }
   }
 }
