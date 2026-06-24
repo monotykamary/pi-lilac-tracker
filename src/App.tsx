@@ -10,6 +10,7 @@ import type { Snapshot, ModelSnapshot } from './types';
 import ModelCard from './components/ModelCard';
 import TimelineChart from './components/TimelineChart';
 import StateTimeline from './components/StateTimeline';
+import CandlestickCard from './components/CandlestickCard';
 import DataSummary from './components/DataSummary';
 import DiscountMercator from './components/DiscountMercator';
 
@@ -166,6 +167,12 @@ export default function App() {
             <StateTimeline
               timeSeries={modelTimeSeries}
               selectedModel={selectedModel}
+            />
+
+            <CandlestickCard
+              timeSeries={modelTimeSeries}
+              selectedModel={selectedModel}
+              onSelectModel={(id) => setSelectedModel(prev => (prev === id ? null : id))}
             />
 
             <section>
