@@ -33,6 +33,12 @@ const DEFAULT_POLL_INTERVAL_MS = (parseInt(process.env.POLL_INTERVAL || "300", 1
 const FAST_POLL_INTERVAL_MS = 60_000;
 const FAST_POLL_DECAY_MS = 10 * 60 * 1000;
 
+// Default window for GET /api/snapshots when neither from/to is given. Prevents
+// the unbounded endpoint from handing the client the entire history if hit
+// without query params. The frontend already sends `from`, so this is a guard
+// for ad-hoc/bare requests and external callers.
+const DEFAULT_SNAPSHOT_WINDOW_MS = 30 * 86_400_000;
+
 const TRACKED_MODELS = new Set([
   "google/gemma-4-31b-it",
   "zai-org/glm-5.1",
@@ -293,7 +299,11 @@ app.use(express.static(path.resolve(import.meta.dirname, "../dist")));
 app.get("/api/snapshots", (req, res) => {
   const from = req.query.from as string | undefined;
   const to = req.query.to as string | undefined;
-  const snapshots = readSnapshots(from, to);
+  // Cap the default window so a bare request can't return the full unbounded
+  // history. Frontend always sends `from`, so this only affects ad-hoc calls.
+  const effectiveFrom =
+    from ?? new Date(Date.now() - DEFAULT_SNAPSHOT_WINDOW_MS).toISOString();
+  const snapshots = readSnapshots(effectiveFrom, to);
   res.json(snapshots);
 });
 
