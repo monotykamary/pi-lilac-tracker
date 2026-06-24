@@ -171,7 +171,7 @@ function PollTooltip({ lastTimestamp, serverStatus }: { lastTimestamp: string | 
 
       <div className="tooltip-section-mild" style={{ paddingTop: 8, marginTop: 10 }}>
         <p className="tooltip-footer">
-          Fast mode (30s) activates for 5 minutes after any supply state change, then reverts to normal (60s). This captures transitions quickly without constant high-frequency polling.
+          Fast mode (60s) activates for 10 minutes after any supply state change, then reverts to normal (10 min). This captures transitions quickly without constant high-frequency polling.
         </p>
       </div>
     </div>
@@ -226,7 +226,7 @@ function SupplyTooltip({ supplyUpdatedAt }: { supplyUpdatedAt: string | null }) 
 
       <div className="tooltip-section-mild" style={{ paddingTop: 8, marginTop: 10 }}>
         <p className="tooltip-footer">
-          Supply state changes are detected via the Lilac /status API. A 24-hour rolling window is used to determine pricing tiers. Transitions trigger fast-mode polling for 5 minutes.
+          Supply state changes are detected via the Lilac /status API. A 24-hour rolling window is used to determine pricing tiers. Transitions trigger fast-mode polling for 10 minutes.
         </p>
       </div>
     </div>
