@@ -29,7 +29,7 @@ export function useServerStatus(refreshMs = 10000): ServerStatus | null {
   return status;
 }
 
-export function useSnapshots(refreshMs = 30000) {
+export function useSnapshots(refreshMs = 30000, days = 7) {
   const [snapshots, setSnapshots] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +39,11 @@ export function useSnapshots(refreshMs = 30000) {
     if (loadingRef.current) return;
     loadingRef.current = true;
     try {
-      const res = await fetch(`${API_BASE}/snapshots`);
+      // Rolling view window: only fetch the last `days` of snapshots. The
+      // server stores history unbounded, but the UI loads a bounded slice so
+      // payloads and chart domains stay predictable as the JSONL grows.
+      const from = new Date(Date.now() - days * 86_400_000).toISOString();
+      const res = await fetch(`${API_BASE}/snapshots?from=${encodeURIComponent(from)}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setSnapshots(data);
@@ -50,7 +54,7 @@ export function useSnapshots(refreshMs = 30000) {
       setLoading(false);
       loadingRef.current = false;
     }
-  }, []);
+  }, [days]);
 
   useEffect(() => {
     loadSnapshots();
