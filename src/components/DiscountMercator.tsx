@@ -14,6 +14,14 @@ import {
   MERCATOR_PLOT_H as PLOT_H,
   MERCATOR_LAT_CLIP as LAT_CLIP,
 } from '../data/worldLand';
+import {
+  TIMEZONE_OFFSETS,
+  TIMEZONE_PATHS,
+  TIMEZONE_PLACES,
+  TIMEZONE_REF_LON,
+  TIMEZONE_X_LO,
+  TIMEZONE_X_HI,
+} from '../data/timezones';
 
 export interface DiscountPoint {
   timestamp: string;
@@ -68,81 +76,21 @@ function hhmmz(hours: number): string {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}z`;
 }
 
-// ── Civil timezones ───────────────────────────────────────────────────────────
-// The real-world UTC offsets everyone politically agreed on — including the
-// messy fractional ones (India +5:30, Nepal +5:45, Iran +3:30, Newfoundland
-// −3:30…). Their reference meridian L = offset × 15° lands BETWEEN the clean
-// 15° graticule grid (82.5°E, 86.25°E…), and the timezone's longitude band
-// (Voronoi cell between adjacent reference meridians) has off-grid edges for
-// fractional zones — the "agreed but weird to look at" payoff.
-//
-// On hover, the band under the cursor is highlighted CLIPPED TO LAND, so its
-// edges follow the actual coastlines (curves, not a straight reference line).
-// Antimeridian-crossing zones (Chatham +12:45, Tonga +13, Kiribati +14) are
-// omitted: their reference meridians wrap to −150°/−165° and collide with
-// Hawaii/Samoa on the flat −180..180 map. This is a reference overlay only —
-// discount data stays attributed to the solar-noon longitude (re-keying by
-// civil offset would collapse to a single meridian, since civil noon is a
-// global instant, not per-longitude).
-const TIMEZONES: { m: number; names: string }[] = [
-  { m: -720, names: 'Baker & Howland Is.' },
-  { m: -660, names: 'American Samoa' },
-  { m: -600, names: 'Hawaii (HST)' },
-  { m: -570, names: 'Marquesas Is.' },
-  { m: -540, names: 'Alaska (AKST)' },
-  { m: -480, names: 'Pacific (PT)' },
-  { m: -420, names: 'Mountain (MT)' },
-  { m: -360, names: 'Central (CT)' },
-  { m: -300, names: 'Eastern (ET)' },
-  { m: -240, names: 'Atlantic (AT)' },
-  { m: -210, names: 'Newfoundland' },
-  { m: -180, names: 'Argentina, Brazil' },
-  { m: -120, names: 'S. Georgia' },
-  { m:  -60, names: 'Azores, Cape Verde' },
-  { m:    0, names: 'UK, Iceland, Ghana' },
-  { m:   60, names: 'CET — Germany, France' },
-  { m:  120, names: 'EET — Egypt, Greece' },
-  { m:  180, names: 'Moscow, Saudi Arabia' },
-  { m:  210, names: 'Iran' },
-  { m:  240, names: 'UAE, Mauritius' },
-  { m:  270, names: 'Afghanistan' },
-  { m:  300, names: 'Pakistan, Uzbekistan' },
-  { m:  330, names: 'India, Sri Lanka' },
-  { m:  345, names: 'Nepal' },
-  { m:  360, names: 'Bangladesh, Bhutan' },
-  { m:  390, names: 'Myanmar, Cocos Is.' },
-  { m:  420, names: 'Indochina, W. Indonesia' },
-  { m:  480, names: 'China, Singapore, PH' },
-  { m:  525, names: 'Eucla (AU)' },
-  { m:  540, names: 'Japan, Korea' },
-  { m:  570, names: 'Central Australia' },
-  { m:  600, names: 'E. Australia' },
-  { m:  630, names: 'Lord Howe Is.' },
-  { m:  660, names: 'Solomon Is.' },
-  { m:  720, names: 'New Zealand, Fiji' },
-];
-// Reference meridian (deg) for zone i: L = offset_minutes × 0.25.
-const tzRefLon = (i: number) => TIMEZONES[i].m * 0.25;
-// Longitude band for zone i = Voronoi cell between adjacent reference
-// meridians. Edges sit at midpoints; for fractional zones these land off the
-// 15° grid (India → 78.75°–84.375°, Nepal → 84.375°–88.125°). First/last
-// zones clamp to the map edges (±180°).
-const TZ_BANDS: { lo: number; hi: number }[] = TIMEZONES.map((_, i) => ({
-  lo: i === 0 ? -180 : (tzRefLon(i - 1) + tzRefLon(i)) / 2,
-  hi: i === TIMEZONES.length - 1 ? 180 : (tzRefLon(i) + tzRefLon(i + 1)) / 2,
-}));
-// Which timezone's band does this longitude fall in? (lon in [-180, 180).)
-function tzIndexForLon(lon: number): number {
-  for (let i = 0; i < TZ_BANDS.length; i++) {
-    if (lon >= TZ_BANDS[i].lo && lon < TZ_BANDS[i].hi) return i;
-  }
-  return lon >= 180 ? TZ_BANDS.length - 1 : 0;
-}
-function fmtOffset(m: number): string {
-  if (m === 0) return 'UTC';
-  const sign = m > 0 ? '+' : '-';
-  const am = Math.abs(m);
-  return `${sign}${Math.floor(am / 60)}:${(am % 60).toString().padStart(2, '0')}`;
+// ── Civil timezones (real political territories) ─────────────────────────────
+// Each offset's territories are real Natural Earth polygons (baked at build
+// time in scripts/gen-timezones.cjs), not straight longitude bands. So China
+// +8 renders as its true 73°E–135°E extent — the political "backtrack" far
+// west of the 120°E solar-noon reference meridian. Hover is resolved by the
+// browser's native SVG point-in-polygon on invisible territory paths (no
+// runtime geo deps). Standard civil offsets only — no DST. This is a reference
+// overlay; discount data stays attributed to the solar-noon longitude.
+function fmtOffset(h: number): string {
+  if (h === 0) return 'UTC';
+  const sign = h > 0 ? '+' : '-';
+  const ah = Math.abs(h);
+  const hh = Math.floor(ah);
+  const mm = Math.round((ah - hh) * 60);
+  return `${sign}${hh}:${mm.toString().padStart(2, '0')}`;
 }
 function fmtLon(lon: number): string {
   const v = Math.round(lon * 100) / 100;
@@ -211,7 +159,14 @@ export default function DiscountMercator({
 }: DiscountMercatorProps) {
   const gid = 'merc-' + useId().replace(/:/g, '');
   const svgRef = useRef<SVGSVGElement>(null);
-  const [hover, setHover] = useState<{ col: number; x: number; y: number } | null>(null);
+  const tipRef = useRef<HTMLDivElement>(null);
+  // Hover is split so the map doesn't re-render on every mousemove:
+  //  - hoverColIdx (state): the longitude column under the cursor. Changes
+  //    only when crossing a 2.5° band boundary, so re-renders are rare.
+  //  - tooltip position: written directly to the DOM via tipRef inside
+  //    onMove — no React state, no re-render, fully smooth.
+  const [hoverColIdx, setHoverColIdx] = useState<number | null>(null);
+  const [hoverTz, setHoverTz] = useState<number | null>(null);
   const [discFilter, setDiscFilter] = useState<number | 'all'>('all');
 
   const focused = !!selectedModel;
@@ -245,28 +200,43 @@ export default function DiscountMercator({
     const r = svg.getBoundingClientRect();
     const scale = r.width / VIEW_W;
     const xLocal = (e.clientX - r.left) / scale;
+    const tip = tipRef.current;
     if (xLocal < ML || xLocal > ML + PLOT_W) {
-      setHover(null);
+      if (hoverColIdx !== null) setHoverColIdx(null);
+      if (tip) tip.style.display = 'none';
       return;
     }
     const col = Math.min(COLS - 1, Math.max(0, Math.floor((xLocal - ML) / COL_W)));
-    setHover({ col, x: e.clientX, y: e.clientY });
+    if (col !== hoverColIdx) setHoverColIdx(col);
+    // Position the tooltip directly on the DOM — no state, so the map doesn't
+    // re-render while the cursor moves within a single column.
+    if (tip) {
+      const TW = 252, TH = 200;
+      let tx = e.clientX + 14;
+      let ty = e.clientY + 14;
+      if (tx + TW > window.innerWidth - 8) tx = e.clientX - TW - 14;
+      if (ty + TH > window.innerHeight - 8) ty = e.clientY - TH - 14;
+      tip.style.display = 'block';
+      tip.style.left = tx + 'px';
+      tip.style.top = ty + 'px';
+    }
   };
 
   const tipW = 252;
-  let tipX = hover ? hover.x + 14 : 0;
-  let tipY = hover ? hover.y + 14 : 0;
-  if (hover) {
-    if (tipX + tipW > window.innerWidth - 8) tipX = hover.x - tipW - 14;
-    if (tipY + 190 > window.innerHeight - 8) tipY = hover.y - 190 - 14;
-  }
-  const hoverCol = hover ? cols[hover.col] : null;
-  const hoverLon = hover ? lonForCol(hover.col) : 0;
-  const hoverNoon = hover ? noonUtcForLon(hoverLon) : 0;
-  const hoverTzIndex = hover ? tzIndexForLon(hoverLon) : -1;
-  const hoverTz = hoverTzIndex >= 0 ? TIMEZONES[hoverTzIndex] : null;
-  const hoverTzBand = hoverTzIndex >= 0 ? TZ_BANDS[hoverTzIndex] : null;
-  const hoverTzRef = hoverTzIndex >= 0 ? tzRefLon(hoverTzIndex) : 0;
+  const hoverCol = hoverColIdx != null ? cols[hoverColIdx] : null;
+  const hoverLon = hoverColIdx != null ? lonForCol(hoverColIdx) : 0;
+  const hoverNoon = hoverColIdx != null ? noonUtcForLon(hoverLon) : 0;
+  // Real civil timezone under the cursor (from browser-native hit-testing on
+  // the invisible territory polygons below) — independent of the solar-noon
+  // longitude column, so the tooltip shows BOTH the civil zone and the
+  // discount activity at that longitude's local noon.
+  const tzIdx = hoverTz;
+  const tzOffset = tzIdx != null ? TIMEZONE_OFFSETS[tzIdx] : null;
+  const tzPlaces = tzIdx != null ? TIMEZONE_PLACES[tzIdx] : null;
+  const tzRefLon = tzIdx != null ? TIMEZONE_REF_LON[tzIdx] : 0;
+  const tzXRef = xForLon(tzRefLon);
+  const tzRefVisible =
+    tzIdx != null && tzXRef >= TIMEZONE_X_LO[tzIdx] - 8 && tzXRef <= TIMEZONE_X_HI[tzIdx] + 8;
   const hoverEntries = hoverCol
     ? [...hoverCol.byModel.entries()].sort((a, b) => b[1] - a[1])
     : [];
@@ -369,7 +339,7 @@ export default function DiscountMercator({
             maxWidth: `calc(70vh * ${VIEW_W} / ${VIEW_H})`,
           }}
           onMouseMove={onMove}
-          onMouseLeave={() => setHover(null)}
+          onMouseLeave={() => { setHoverColIdx(null); setHoverTz(null); }}
         >
           <defs>
             <clipPath id={`${gid}-land`}>
@@ -467,42 +437,60 @@ export default function DiscountMercator({
             <animate attributeName="opacity" values="1;0.55;1" dur="2.2s" repeatCount="indefinite" />
           </circle>
 
-          {/* hovered civil-timezone territory — the band under the cursor,
-              clipped to land so its edges follow the actual coastlines
-              (curves, not a straight reference line). The crisp ember meridian
-              at L = offset × 15° lands BETWEEN the 15° graticule lines for
-              fractional zones (India +5:30 → 82.5°E, Nepal +5:45 → 86.25°E).
-              Coexists with the dashed cyan solar-noon meridian: civil vs solar. */}
-          {hover && hoverTz && hoverTzBand && (
-            <g clipPath={`url(#${gid}-land)`} style={{ pointerEvents: 'none' }}>
-              <rect
-                x={xForLon(hoverTzBand.lo)}
-                y={MT}
-                width={Math.max(0, xForLon(hoverTzBand.hi) - xForLon(hoverTzBand.lo))}
-                height={PLOT_H}
-                style={{ fill: 'var(--ember)' }}
-                opacity={0.16}
-              />
-              <line
-                x1={xForLon(hoverTzRef)} y1={MT}
-                x2={xForLon(hoverTzRef)} y2={MT + PLOT_H}
-                style={{ stroke: 'var(--ember)' }}
-                strokeWidth={1.5}
-                opacity={0.9}
-              />
-              <circle
-                cx={xForLon(hoverTzRef)} cy={eqY} r={3.5}
-                style={{ fill: 'var(--ember)', stroke: 'var(--surface)' }}
-                strokeWidth={1.5}
-              />
+          {/* hovered civil-timezone territory — a REAL Natural Earth polygon
+              (not a straight longitude band). China +8 spans 73°E–135°E; the
+              dashed ember reference meridian at L = offset × 15° (120°E) cuts
+              through it, exposing the "backtrack": political territory reaches
+              ~47° west of its solar-noon longitude. Visibility is carried by a
+              thin OUTLINE, not a fill — discount data reaches 0.9 opacity, so a
+              faint fill vanishes over busy columns, but a 1px ember stroke with
+              a soft surface halo reads on any background without overpowering.
+              Clipped to land so ocean stays negative space. Ref meridian dashed
+              ember (parallel to the dashed-cyan solar noon): civil vs solar. */}
+          {hoverColIdx != null && tzIdx != null && (
+            <g style={{ pointerEvents: 'none' }}>
+              <g clipPath={`url(#${gid}-land)`}>
+                <path d={TIMEZONE_PATHS[tzIdx]} style={{ fill: 'var(--ember)' }} opacity={0.12} />
+                <path d={TIMEZONE_PATHS[tzIdx]} fill="none" style={{ stroke: 'var(--surface)' }} strokeWidth={2.6} opacity={0.6} />
+                <path d={TIMEZONE_PATHS[tzIdx]} fill="none" style={{ stroke: 'var(--ember)' }} strokeWidth={1.1} opacity={0.95} />
+                {tzRefVisible && (
+                  <>
+                    <line
+                      x1={tzXRef} y1={MT} x2={tzXRef} y2={MT + PLOT_H}
+                      style={{ stroke: 'var(--ember)' }} strokeWidth={1.3} strokeDasharray="4 3" opacity={0.85}
+                    />
+                    <circle
+                      cx={tzXRef} cy={eqY} r={3}
+                      style={{ fill: 'var(--ember)', stroke: 'var(--surface)' }} strokeWidth={1.2}
+                    />
+                  </>
+                )}
+              </g>
+              {tzRefVisible && (
+                <g transform={`translate(${Math.max(ML + 26, Math.min(ML + PLOT_W - 26, tzXRef))}, ${MT + 13})`}>
+                  <rect x={-24} y={-9} width={48} height={16} rx={4} style={{ fill: 'var(--ember)' }} />
+                  <text x={0} y={2.5} textAnchor="middle" className="mercator-tz-label">{fmtOffset(tzOffset!)}</text>
+                </g>
+              )}
             </g>
           )}
-          {hover && hoverTz && (
-            <g transform={`translate(${Math.max(ML + 26, Math.min(ML + PLOT_W - 26, xForLon(hoverTzRef)))}, ${MT + 13})`} style={{ pointerEvents: 'none' }}>
-              <rect x={-24} y={-9} width={48} height={16} rx={4} style={{ fill: 'var(--ember)' }} />
-              <text x={0} y={2.5} textAnchor="middle" className="mercator-tz-label">{fmtOffset(hoverTz.m)}</text>
-            </g>
-          )}
+
+          {/* timezone hit layer — invisible territory polygons. The browser's
+              native SVG point-in-polygon does hover detection for free,
+              accurate to real borders (incl. China's far-west +8 reach), with
+              zero runtime geo deps. Topmost so it captures over the data. */}
+          <g>
+            {TIMEZONE_PATHS.map((d, idx) => (
+              <path
+                key={idx}
+                d={d}
+                fill="none"
+                stroke="none"
+                style={{ pointerEvents: 'all' }}
+                onMouseEnter={() => setHoverTz(idx)}
+              />
+            ))}
+          </g>
 
           {/* frame */}
           <rect x={ML} y={MT} width={PLOT_W} height={PLOT_H} rx={5} fill="none" className="mercator-frame-stroke" />
@@ -617,11 +605,12 @@ export default function DiscountMercator({
         )}
       </div>
 
-      {hover && (
-        <div
-          style={{ position: 'fixed', left: tipX, top: tipY, width: tipW, zIndex: 50, pointerEvents: 'none' }}
-        >
-          <div className="glass-panel" style={{ padding: '10px 12px' }}>
+      <div
+        ref={tipRef}
+        style={{ position: 'fixed', left: 0, top: 0, width: tipW, zIndex: 50, pointerEvents: 'none' }}
+      >
+        {hoverColIdx != null && (
+        <div className="glass-panel" style={{ padding: '10px 12px' }}>
             <div className="tooltip-row-flex" style={{ marginBottom: 6 }}>
               <span className="tooltip-header">
                 {hoverLon >= 0 ? '+' : ''}{hoverLon.toFixed(0)}° longitude
@@ -630,13 +619,13 @@ export default function DiscountMercator({
                 local noon {hhmmz(hoverNoon)}
               </span>
             </div>
-            {hoverTz && (
+            {tzIdx != null && tzPlaces != null && (
               <div className="tooltip-row-flex" style={{ marginBottom: 6 }}>
                 <span className="tooltip-row-item">
                   <span className="tooltip-dot" style={{ background: 'var(--ember)' }} />
-                  <span className="tooltip-row-label">{fmtOffset(hoverTz.m)} · {hoverTz.names}</span>
+                  <span className="tooltip-row-label">{fmtOffset(tzOffset!)} · {tzPlaces}</span>
                 </span>
-                <span className="tooltip-row-value">ref {fmtLon(hoverTzRef)}</span>
+                <span className="tooltip-row-value">ref {fmtLon(tzRefLon)}</span>
               </div>
             )}
             {(!hoverCol || hoverCol.count === 0) ? (
@@ -679,8 +668,8 @@ export default function DiscountMercator({
               </div>
             )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }

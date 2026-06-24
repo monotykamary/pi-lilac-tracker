@@ -3,4 +3,5 @@ dist/
 /.env
 /data/
 scripts/land-110m.json
+scripts/ne_10m_time_zones.geojson
 scripts/node_modules/

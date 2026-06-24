@@ -9,6 +9,7 @@
     "dev:web": "vite",
     "build": "tsc -b && vite build",
     "gen:world": "node scripts/gen-world-land.cjs",
+    "gen:tz": "node scripts/gen-timezones.cjs",
     "lint": "eslint .",
     "typecheck": "tsc -b",
     "start": "node server/index.ts"
