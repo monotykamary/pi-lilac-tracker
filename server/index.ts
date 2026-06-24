@@ -7,11 +7,12 @@
  *
  * Polling strategy:
  *   - Lilac's discount/supply state updates every ~10 minutes (600s lock-in window).
- *   - Default interval: 10 minutes. More frequent polling just re-reads stale data.
+ *   - Default interval: 5 minutes. Polling twice per window catches a transition
+ *     within ~5 min instead of waiting up to a full 10-min window for stale data.
  *   - When a state change is detected, reduce to 1 minute for 10 minutes.
  *     This lets us observe when the new state stabilises, since we don't know
  *     exactly when the 10-minute window started.
- *   - ~5.3K entries/year at 10m; trivial for JSONL.
+ *   - ~10.5K entries/year at 5m; trivial for JSONL.
  */
 
 import fs from "fs";
@@ -28,7 +29,7 @@ const STATUS_URL = "https://api.getlilac.com/status";
 const MODELS_URL = "https://api.getlilac.com/v1/models";
 const PORT = parseInt(process.env.PORT || "3100", 10);
 const DATA_FILE = path.resolve(process.env.DATA_FILE || "./data/snapshots.jsonl");
-const DEFAULT_POLL_INTERVAL_MS = (parseInt(process.env.POLL_INTERVAL || "600", 10)) * 1000;
+const DEFAULT_POLL_INTERVAL_MS = (parseInt(process.env.POLL_INTERVAL || "300", 10)) * 1000;
 const FAST_POLL_INTERVAL_MS = 60_000;
 const FAST_POLL_DECAY_MS = 10 * 60 * 1000;
 

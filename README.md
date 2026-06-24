@@ -20,7 +20,7 @@ The Lilac `/status` API returns per-model:
 - **TTFB** — time to first byte
 - **Uptime %** — 24h uptime
 
-Lilac claims these rates lock in every ~10 minutes. This tracker polls every 10 minutes (adapting to 60s for 10 minutes when a state change is detected) to capture those transitions with high resolution. Over a year this produces ~5.3K entries — trivial for JSONL.
+Lilac claims these rates lock in every ~10 minutes. This tracker polls every 5 minutes (twice per window, adapting to 60s for 10 minutes when a state change is detected) to capture those transitions with high resolution. Over a year this produces ~10.5K entries — trivial for JSONL.
 
 ## Quick start
 
@@ -77,17 +77,17 @@ Vite + React + Tailwind + Recharts — styled after pi-tps-web.
 
 | Condition | Interval |
 |-----------|----------|
-| Default | 600s (10 min) |
+| Default | 300s (5 min) |
 | Supply state change detected | 60s for 10 minutes |
 
-This gives higher resolution around transitions while keeping baseline cost low (~5.3K entries/year at the 10-minute baseline).
+This gives higher resolution around transitions while keeping baseline cost low (~10.5K entries/year at the 5-minute baseline).
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILAC_API_KEY` | — | Required. Your Lilac API key |
-| `POLL_INTERVAL` | `600` | Base polling interval in seconds |
+| `POLL_INTERVAL` | `300` | Base polling interval in seconds |
 | `PORT` | `3100` | Server port |
 | `DATA_FILE` | `./data/snapshots.jsonl` | Path to JSONL storage |
 | `PROD_URL` | `https://pi-lilac-tracker.up.railway.app` | Production base URL for `npm run pull:prod` |

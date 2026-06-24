@@ -54,7 +54,7 @@ function Pill({ icon: Icon, label, value, accent = false }: {
 /* ── Snapshot Tooltip ── */
 function SnapshotTooltip({ snapshotCount }: { snapshotCount: number }) {
   const perDay = snapshotCount > 0 ? (snapshotCount / 1).toFixed(0) : '0';
-  const maxYearly = 52560; // ~1 per 10 min
+  const maxYearly = 105120; // ~1 per 5 min
   const fillPct = Math.min((snapshotCount / maxYearly) * 100, 100);
 
   return (
@@ -98,7 +98,7 @@ function SnapshotTooltip({ snapshotCount }: { snapshotCount: number }) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div className="tooltip-row-flex">
             <span style={{ fontSize: 10, color: '#71717a' }}>Collection rate</span>
-            <span className="tooltip-row-value">Every 10 min (1 min in fast mode)</span>
+            <span className="tooltip-row-value">Every 5 min (1 min in fast mode)</span>
           </div>
           <div className="tooltip-row-flex">
             <span style={{ fontSize: 10, color: '#71717a' }}>Data points / model</span>
@@ -171,7 +171,7 @@ function PollTooltip({ lastTimestamp, serverStatus }: { lastTimestamp: string | 
 
       <div className="tooltip-section-mild" style={{ paddingTop: 8, marginTop: 10 }}>
         <p className="tooltip-footer">
-          Fast mode (60s) activates for 10 minutes after any supply state change, then reverts to normal (10 min). This captures transitions quickly without constant high-frequency polling.
+          Fast mode (60s) activates for 10 minutes after any supply state change, then reverts to normal (5 min). This captures transitions quickly without constant high-frequency polling.
         </p>
       </div>
     </div>
@@ -235,8 +235,8 @@ function SupplyTooltip({ supplyUpdatedAt }: { supplyUpdatedAt: string | null }) 
 
 /* ── Interval Tooltip ── */
 function IntervalTooltip({ serverStatus }: { serverStatus: ServerStatus | null }) {
-  const current = serverStatus?.interval_ms ?? 600_000;
-  const defaultMs = 600_000;
+  const current = serverStatus?.interval_ms ?? 300_000;
+  const defaultMs = 300_000;
   const fastMs = 60_000;
   const isFast = current === fastMs;
   const againstDefault = Math.max(0, (defaultMs - current) / defaultMs * 100);
@@ -260,7 +260,7 @@ function IntervalTooltip({ serverStatus }: { serverStatus: ServerStatus | null }
         </div>
         <div className="tooltip-mini-card">
           <div className="tooltip-mini-label">Default</div>
-          <div className="tooltip-mini-value">10m</div>
+          <div className="tooltip-mini-value">5m</div>
         </div>
         <div className="tooltip-mini-card tooltip-mini-card-moss">
           <div className="tooltip-mini-label tooltip-mini-label-moss">Fast</div>
@@ -284,7 +284,7 @@ function IntervalTooltip({ serverStatus }: { serverStatus: ServerStatus | null }
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div className="tooltip-row-flex">
             <span style={{ fontSize: 10, color: '#71717a' }}>Normal rate</span>
-            <span className="tooltip-row-value">1 snapshot / 10 min</span>
+            <span className="tooltip-row-value">1 snapshot / 5 min</span>
           </div>
           <div className="tooltip-row-flex">
             <span style={{ fontSize: 10, color: '#71717a' }}>Fast rate</span>
@@ -299,7 +299,7 @@ function IntervalTooltip({ serverStatus }: { serverStatus: ServerStatus | null }
 
       <div className="tooltip-section-mild" style={{ paddingTop: 8, marginTop: 10 }}>
         <p className="tooltip-footer">
-          Lilac's discount window is ~10 minutes — more frequent polling just re-reads stale data. Normal mode polls once per window. Fast mode activates after state changes to observe when the new state stabilises.
+          Lilac's discount window is ~10 minutes — normal mode polls twice per window (every 5 min) to catch transitions within half a window rather than waiting up to a full one. Fast mode activates after state changes to observe when the new state stabilises.
         </p>
       </div>
     </div>
