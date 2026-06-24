@@ -56,7 +56,7 @@ Vite + React + Tailwind + Recharts — styled after pi-tps-web.
 
 - **Model cards** — current supply state, discount %, multiplier, TPS, TTFT
 - **Supply state timeline** — color-coded blocks showing state transitions over time
-- **Time series charts** — discount %, credit multiplier, TPS, TTFT, uptime
+- **Time series charts** — discount rate, TPS, TTFT, uptime
 
 ## Adaptive polling
 

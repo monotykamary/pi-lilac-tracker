@@ -1,6 +1,6 @@
 import { clsx } from 'clsx';
 import { motion } from 'framer-motion';
-import { MODEL_LABELS, MODEL_COLORS, SUPPLY_STATE_COLORS } from '../types';
+import { MODEL_LABELS, MODEL_COLORS, SUPPLY_STATE_COLORS, discountColor } from '../types';
 import type { ModelSnapshot } from '../types';
 
 interface ModelCardProps {
@@ -10,24 +10,35 @@ interface ModelCardProps {
   onToggle: () => void;
 }
 
-function SupplyBadge({ state }: { state: string }) {
+// Compact inline supply chip for the card header. The shared .supply-badge is
+// sized for the map header; this is the same dot+state idea at card scale.
+function SupplyChip({ state }: { state: string }) {
   const color = SUPPLY_STATE_COLORS[state] || SUPPLY_STATE_COLORS.unknown;
   return (
-    <span className="supply-badge" style={{ backgroundColor: `${color}18`, color }}>
-      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+    <span
+      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wide shrink-0"
+      style={{ backgroundColor: `${color}1a`, color }}
+      title={`Supply: ${state}`}
+    >
+      <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: color }} />
       {state}
     </span>
   );
 }
 
-function Stat({ label, value, large = false }: { label: string; value: string; large?: boolean }) {
+// Flat inline label+value pair — .stat-label over .stat-value, no box. The
+// discount is the focal metric, carried by deal-quality color. See index.css
+// for the scale tokens + the "never .pill inside a card" guardrail.
+function Metric({
+  label, value, color,
+}: { label: string; value: string; color?: string }) {
   return (
-    <div className="flex flex-col">
+    <div className="flex items-baseline gap-1.5 whitespace-nowrap">
       <span className="stat-label">{label}</span>
-      <span className={clsx(
-        'metric-mono text-zinc-800 dark:text-zinc-100',
-        large ? 'stat-value-lg' : 'stat-value-sm',
-      )}>
+      <span
+        className="metric-mono stat-value"
+        style={color ? { color } : undefined}
+      >
         {value}
       </span>
     </div>
@@ -56,37 +67,31 @@ export default function ModelCard({ modelId, latest, isSelected, onToggle }: Mod
           : undefined
       }
     >
-      <div className="p-5">
-          <div className="flex items-center justify-between gap-3 mb-4">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: color }} />
-              <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-200 truncate">{label}</h3>
-            </div>
-            {latest && <SupplyBadge state={latest.supply_state} />}
+      <div style={{ padding: 'var(--space-card-pad)' }}>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+            <h3 className="text-[13px] font-semibold text-zinc-800 dark:text-zinc-200 truncate">{label}</h3>
+            {latest && <SupplyChip state={latest.supply_state} />}
           </div>
 
-        {!latest ? (
-          <p className="text-xs text-zinc-400">No data yet</p>
-        ) : (
-          <div className="space-y-4">
-            <div className="flex">
-              <div className="w-1/2 pr-3">
-                <Stat label="Discount" value={`${latest.discount_percent}%`} large />
-              </div>
-              <div className="w-1/2 pl-3 card-divider">
-                <Stat label="Multiplier" value={`${latest.credit_multiplier.toFixed(2)}×`} large />
-              </div>
+          {!latest ? (
+            <span className="text-[11px] text-zinc-400 shrink-0">No data yet</span>
+          ) : (
+            <div className="flex items-center gap-2.5 shrink-0">
+              <Metric
+                label="Discount"
+                value={`${latest.discount_percent}%`}
+                color={discountColor(latest.discount_percent)}
+              />
+              <div className="card-divider self-stretch" />
+              <Metric
+                label="TPS"
+                value={latest.tps !== null ? `${latest.tps.toFixed(1)} t/s` : '—'}
+              />
             </div>
-            <div className="flex">
-              <div className="w-1/2 pr-3">
-                <Stat label="TPS" value={latest.tps !== null ? latest.tps.toFixed(1) : '—'} />
-              </div>
-              <div className="w-1/2 pl-3 card-divider">
-                <Stat label="TTFT" value={latest.ttfb_seconds !== null ? `${latest.ttfb_seconds.toFixed(2)}s` : '—'} />
-              </div>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </motion.div>
   );

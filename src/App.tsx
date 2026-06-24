@@ -180,15 +180,15 @@ export default function App() {
             </section>
 
             <TimelineChart
-              title="Credit Multiplier"
+              title="Discount Rate"
               timeSeries={modelTimeSeries}
               selectedModel={selectedModel}
-              extractValue={(m) => m.credit_multiplier}
-              unit="×"
-              yDomain={[0, 1.1]}
+              extractValue={(m) => m.discount_percent}
+              unit="%"
+              yDomain={[0, 100]}
               colorByModel={MODEL_COLORS}
               labelByModel={MODEL_LABELS}
-              formatValue={(v) => v.toFixed(2)}
+              formatValue={(v) => v.toFixed(0)}
             />
 
             <TimelineChart

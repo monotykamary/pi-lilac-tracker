@@ -26,6 +26,14 @@
   --accent: #0891b2;
   --accent-light: #06b6d4;
   --accent-muted: #164e63;
+
+  /* Layout + scale tokens — centralize the magic numbers so a .pill and an
+     in-card metric can never accidentally share a scale again. */
+  --radius-card: 1.25rem;
+  --radius-pill: 1rem;
+  --space-card-pad: 0.75rem;
+  --metric-label-size: 9px;
+  --metric-value-size: 13px;
 }
 
 .dark {
@@ -57,7 +65,7 @@ body {
   .card-surface {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 1.25rem;
+    border-radius: var(--radius-card);
     box-shadow: 0 20px 40px -15px rgba(0,0,0,0.05);
   }
 
@@ -76,7 +84,7 @@ body {
     align-items: center;
     gap: 0.625rem;
     padding: 0.625rem 0.875rem;
-    border-radius: 1rem;
+    border-radius: var(--radius-pill);
     border: 1px solid rgba(228, 228, 231, 0.5);
     background: rgba(255, 255, 255, 0.6);
   }
@@ -265,27 +273,25 @@ body {
     white-space: nowrap;
   }
 
+  /* In-card metric typography — flat (no box), token-driven, deliberately
+     distinct from .pill. .pill is a bordered mini-card for standalone summary
+     rows (DataSummary); these are label+value pairs used *inside* a
+     .card-surface, laid out inline (see ModelCard's pill-row). Never reuse
+     .pill inside a card — it nests boxes and eats the card's padding. Spacing
+     is owned by the layout (flex gap), not by these classes. */
   .stat-label {
-    font-size: 10px;
+    font-size: var(--metric-label-size);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     font-weight: 500;
-    color: #6b7280;
-    margin-bottom: 0.25rem;
+    color: var(--text-tertiary);
   }
 
-  .dark .stat-label {
-    color: #5b5b63;
-  }
-
-  .stat-value-sm {
-    font-size: 14px;
+  .stat-value {
+    font-size: var(--metric-value-size);
     font-weight: 600;
-  }
-
-  .stat-value-lg {
-    font-size: 20px;
-    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.1;
   }
 
   .card-divider {
