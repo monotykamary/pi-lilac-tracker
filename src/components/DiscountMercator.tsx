@@ -12,7 +12,10 @@ import {
   MERCATOR_PLOT_Y as MT,
   MERCATOR_PLOT_W as PLOT_W,
   MERCATOR_PLOT_H as PLOT_H,
-  MERCATOR_LAT_CLIP as LAT_CLIP,
+  MERCATOR_SOUTH_CLIP as SOUTH_CLIP,
+  MERCATOR_CORE_CLIP as CORE_CLIP,
+  MERCATOR_NORTH_CLIP as NORTH_CLIP,
+  MERCATOR_NORTH_BAND as NORTH_BAND,
 } from '../data/worldLand';
 import {
   TIMEZONE_OFFSETS,
@@ -46,8 +49,12 @@ const COLS = 144; // 144 longitude bands (2.5° each)
 const COL_W = PLOT_W / COLS;
 const yMerc = (latDeg: number) =>
   Math.log(Math.tan(Math.PI / 4 + (latDeg * Math.PI / 180) / 2));
-const Y_LO = yMerc(-LAT_CLIP);
-const Y_HI = yMerc(LAT_CLIP);
+// Polar squish constants — MUST match squishY in scripts/gen-world-land.cjs &
+// gen-timezones.cjs. The ±60° core uses true Mercator scale; the 60→82°N band
+// is compressed into NORTH_BAND px above it (Antarctica & the >82°N cap dropped).
+const MERCATOR_SCALE = PLOT_W / (2 * Math.PI);
+const M_CORE = yMerc(CORE_CLIP);
+const M_NORTH = yMerc(NORTH_CLIP);
 
 function lonForCol(col: number): number {
   return -180 + ((col + 0.5) / COLS) * 360;
@@ -66,8 +73,12 @@ function noonUtcForLon(lon: number): number {
   return (((12 - lon / 15) % 24) + 24) % 24;
 }
 function yForLat(lat: number): number {
-  const l = Math.min(LAT_CLIP, Math.max(-LAT_CLIP, lat));
-  return MT + PLOT_H * (1 - (yMerc(l) - Y_LO) / (Y_HI - Y_LO));
+  const l = Math.min(NORTH_CLIP, Math.max(SOUTH_CLIP, lat));
+  const m = yMerc(l);
+  // Squished Mercator: 60→82°N band compresses into NORTH_BAND px above the
+  // unchanged ±60° core. Mirrors squishY() in the generators exactly.
+  if (m >= M_CORE) return MT + NORTH_BAND * (M_NORTH - m) / (M_NORTH - M_CORE);
+  return MT + NORTH_BAND + MERCATOR_SCALE * (M_CORE - m);
 }
 function hhmmz(hours: number): string {
   const total = Math.round(hours * 60);
@@ -465,7 +476,7 @@ export default function DiscountMercator({
               />
             );
           })}
-          {[-60, -30, 0, 30, 60].map((lat) => (
+          {[-60, -30, 0, 30, 60, 75].map((lat) => (
             <line
               key={`p${lat}`}
               x1={ML} y1={yForLat(lat)} x2={ML + PLOT_W} y2={yForLat(lat)}

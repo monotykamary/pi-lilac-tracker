@@ -18,19 +18,100 @@ const fs = require('fs');
 const path = require('path');
 const d3 = require('d3-geo');
 
-// ---- projection constants (mirror gen-world-land.cjs) ----
+// ---- projection constants (mirror gen-world-land.cjs & the component) ----
 const ML = 12, MR = 12, MT = 12, MB = 26;
 const VIEW_W = 972;
 const PLOT_W = VIEW_W - ML - MR;            // 948
-const LAT_CLIP = 60;
+const SOUTH_CLIP = -60;                      // drop everything below (Antarctica)
+const CORE_CLIP = 60;                        // core Mercator spans ±60°
+const NORTH_CLIP = 82;                       // extend north to here (then squish)
+const BAND_H = 120;                          // squished height of the 60→82°N band
 const yMerc = (latDeg) => Math.log(Math.tan(Math.PI / 4 + (latDeg * Math.PI / 180) / 2));
-const Y_LO = yMerc(-LAT_CLIP), Y_HI = yMerc(LAT_CLIP);
-const PLOT_H = Math.round((PLOT_W / (2 * Math.PI)) * (Y_HI - Y_LO));
 const SCALE = PLOT_W / (2 * Math.PI);
+const m60 = yMerc(CORE_CLIP), m82 = yMerc(NORTH_CLIP);
+const CORE_H = SCALE * (m60 - yMerc(-CORE_CLIP));     // true-mercator height of ±60° core
+const HONEST_NORTH = SCALE * (m82 - m60);             // true-mercator height of 60→82° band
+const HONEST_TOTAL = HONEST_NORTH + CORE_H;           // true-mercator height of -60..82
+const PLOT_H = BAND_H + CORE_H;
+const VIEW_H = MT + PLOT_H + MB;
+// Asymmetric true-Mercator: lat 82 → top (MT), lat -60 → bottom. d3's default
+// clipAntimeridian cuts wrapping polygons at ±180° before projection; clipExtent
+// trims to the honest -60..82 rect (drops Antarctica, which is below -60).
 const projection = d3.geoMercator()
   .scale(SCALE)
-  .translate([ML + PLOT_W / 2, MT + PLOT_H / 2])
-  .clipExtent([[ML, MT], [ML + PLOT_W, MT + PLOT_H]]);
+  .translate([ML + PLOT_W / 2, MT + SCALE * m82])
+  .clipExtent([[ML, MT], [ML + PLOT_W, MT + HONEST_TOTAL]]);
+
+// Squish a true-mercator y (d3 output) into the squished frame: the 60→82° band
+// compresses to BAND_H px; the ±60° core shifts by (BAND_H-HONEST_NORTH).
+// MUST match yForLat() in DiscountMercator.tsx and squishY in gen-world-land.cjs.
+const r3 = (v) => Math.round(v * 1000) / 1000;
+function squishY(y) {
+  if (y <= MT + HONEST_NORTH) return r3(MT + BAND_H * (y - MT) / HONEST_NORTH);
+  return r3(y + (BAND_H - HONEST_NORTH));
+}
+// Transform every y-coordinate in an SVG path d-string through fn. d3.geoPath
+// emits only absolute M / L / Z, so the 2nd, 4th, 6th… number after an M/L is a
+// y. x untouched (antimeridian cuts stay vertical). Commas/spaces preserved.
+function transformPathY(d, fn) {
+  const re = /([MLZmlz])|(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)|([,\s]+)/g;
+  let out = '', cmd = '', idx = 0, m;
+  while ((m = re.exec(d)) !== null) {
+    if (m[1]) { cmd = m[1]; idx = 0; out += m[1]; }
+    else if (m[3]) { out += m[3]; }
+    else {
+      const isY = (cmd === 'M' || cmd === 'L') && (idx % 2 === 1);
+      out += isY ? fn(parseFloat(m[2])) : m[2];
+      idx++;
+    }
+  }
+  return out;
+}
+// Drop polygons whose latitude bbox is entirely polar (no countries there):
+// Antarctica (max lat < -60) or the north polar cap (min lat > 82). Applied
+// per sub-polygon so a timezone offset keeps its non-polar territories.
+function polyKept(poly) {
+  let mn = 90, mx = -90;
+  for (const r of poly) for (const [x, y] of r) { if (y < mn) mn = y; if (y > mx) mx = y; }
+  if (mx < SOUTH_CLIP) return false;
+  if (mn > NORTH_CLIP) return false;
+  return true;
+}
+// Drop degenerate outer rings — those with near-zero longitude width OR
+// near-zero latitude span (a 0-area polygon). Natural Earth emits these as
+// boundary slivers (e.g. a timezone-offset line running to the pole, or the
+// Gambier Islands tick); they have zero fill and render as a stray vertical
+// stroke, not a real territory. Real features have non-trivial span.
+const DEGEN_TOL = 0.02; // degrees
+function ringDegenerate(ring) {
+  let mnX = 180, mxX = -180, mnY = 90, mxY = -90;
+  for (const [x, y] of ring) { if (x < mnX) mnX = x; if (x > mxX) mxX = x; if (y < mnY) mnY = y; if (y > mxY) mxY = y; }
+  return (mxX - mnX < DEGEN_TOL) || (mxY - mnY < DEGEN_TOL);
+}
+function filterGeom(g) {
+  if (g.type === 'Polygon') return (polyKept(g.coordinates) && !ringDegenerate(g.coordinates[0])) ? g : null;
+  if (g.type === 'MultiPolygon') {
+    // polyKept drops entirely-polar sub-polygons; ringDegenerate drops zero-area
+    // outer rings (boundary slivers that render as stray vertical strokes — e.g.
+    // the +12 Kamchatka pole-boundary line, the -9 Gambier Islands tick). Both
+    // applied per sub-polygon so an offset keeps its real territories.
+    const k = g.coordinates.filter((poly) => polyKept(poly) && !ringDegenerate(poly[0]));
+    return k.length ? { type: 'MultiPolygon', coordinates: k } : null;
+  }
+  return g;
+}
+// Clamp every vertex's latitude to [SOUTH_CLIP, NORTH_CLIP]. This is the fix
+// for non-polar countries that share a timezone polygon with a pole-sliver
+// (e.g. the UTC+0 "Iceland, United Kingdom, Ireland" ring reaches 90°N): the
+// pole vertex would project to NaN and corrupt the whole ring, erasing the
+// UK. Clamping pre-projection truncates the sliver at the 82°N frame line
+// instead, keeping every non-polar country intact and NaN-free.
+function clampGeom(g) {
+  const clampRing = (r) => r.map(([x, y]) => [x, Math.min(NORTH_CLIP, Math.max(SOUTH_CLIP, y))]);
+  if (g.type === 'Polygon') return { type: 'Polygon', coordinates: g.coordinates.map(clampRing) };
+  if (g.type === 'MultiPolygon') return { type: 'MultiPolygon', coordinates: g.coordinates.map((p) => p.map(clampRing)) };
+  return g;
+}
 
 // Douglas-Peucker tolerance in DEGREES. 0.5° ≈ 0.8px at the equator on this
 // map — visually lossless, but slashes coordinate counts (coastlines that
@@ -119,7 +200,9 @@ for (const f of fc.features) {
   const z = f.properties.zone;
   if (z == null || Number.isNaN(z)) continue;
   if (!byOffset.has(z)) byOffset.set(z, []);
-  const g = simplifyGeom(f.geometry, SIMPLIFY_TOL);
+  const filtered = filterGeom(f.geometry);
+  if (!filtered) continue;                       // entirely polar (Antarctica / Arctic cap)
+  const g = simplifyGeom(clampGeom(filtered), SIMPLIFY_TOL);
   byOffset.get(z).push({
     type: 'Feature',
     properties: { places: f.properties.places },
@@ -137,12 +220,12 @@ for (const z of offsets) {
   const feats = byOffset.get(z);
   const collection = { type: 'FeatureCollection', features: feats };
   let pathStr = d3.geoPath(projection)(collection) || '';
-  // d3's antimeridian preclip can produce a vertex with NaN y, and near-pole
-  // rings project to absurd y (±thousands), when a timezone territory touches
-  // the pole (Russia/Chukchi). clipExtent trims the rendered path but the raw
-  // d string keeps the bad numbers, making the whole <path d> invalid (console
-  // error + no render). Clamp NaN/extreme coords to the top frame (MT); keeps
-  // every subpath + its vertex count so polygon closure survives, and the
+  // Squish the honest true-Mercator y into the squished frame (60→82° band
+  // compressed). x untouched so antimeridian cuts stay vertical.
+  pathStr = transformPathY(pathStr, squishY);
+  // d3's antimeridian preclip can still produce a vertex with NaN y near the
+  // clip boundary; clamp NaN/extreme coords to the top frame (MT) so the d
+  // string stays valid. (Polar NaN sources are already dropped by filterGeom.)
   // clamped sliver lands on the ocean strip where the land clip hides it.
   pathStr = pathStr.replace(/NaN/g, String(MT)).replace(
     /-?\d+(?:\.\d+)?/g,
