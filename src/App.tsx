@@ -177,7 +177,7 @@ export default function App() {
             />
 
             <section>
-              <DiscountAdvisory timeSeries={modelTimeSeries} />
+              <DiscountAdvisory timeSeries={modelTimeSeries} selectedModel={selectedModel} />
               <div className="mt-6">
                 <DiscountMercator
                   timeSeries={modelTimeSeries}

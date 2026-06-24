@@ -1,10 +1,11 @@
 import { useMemo, useState, useEffect, useId } from 'react';
 import { SunHorizon, Sun, Moon, ArrowUpRight } from '@phosphor-icons/react';
-import { TRACKED_MODELS, discountColor } from '../types';
+import { TRACKED_MODELS, MODEL_LABELS, discountColor } from '../types';
 import type { DiscountPoint } from './DiscountMercator';
 
 interface Props {
   timeSeries: Record<string, DiscountPoint[]>;
+  selectedModel: string | null;
 }
 
 // ── Local-hour discount statistics ───────────────────────────────────────────
@@ -17,9 +18,10 @@ interface Props {
 // the flatland translation: a sentence + a clock.
 interface HourStat { count: number; avg: number; goodShare: number; }
 
-function buildLocalHourStats(timeSeries: Record<string, DiscountPoint[]>): HourStat[] {
+function buildLocalHourStats(timeSeries: Record<string, DiscountPoint[]>, selectedModel: string | null): HourStat[] {
   const acc = Array.from({ length: 24 }, () => ({ count: 0, sum: 0, good75: 0 }));
-  for (const id of TRACKED_MODELS) {
+  const models = selectedModel ? [selectedModel] : TRACKED_MODELS;
+  for (const id of models) {
     const pts = timeSeries[id] || [];
     for (const p of pts) {
       const disc = p.snapshot.discount_percent;
@@ -127,13 +129,17 @@ interface Advisory {
   bursts: boolean;
 }
 
-function buildAdvisory(stats: HourStat[], now: Date): Advisory {
+function buildAdvisory(stats: HourStat[], now: Date, selectedModel: string | null): Advisory {
   const total = stats.reduce((a, s) => a + s.count, 0);
   const empty: Advisory = {
     hasData: false, headline: '', detail: '', rightNow: 'neutral', rightNowText: '',
     prime: null, dead: null, bursts: false,
   };
-  if (total < 60) return empty;
+  // A single model has ~1/N the observations the pooled view does, so relax
+  // the minimum gate proportionally — but never below a per-hour floor so a
+  // half-empty clock still reads as "not enough history yet".
+  const minTotal = selectedModel ? Math.max(24, 60 / TRACKED_MODELS.length) : 60;
+  if (total < minTotal) return empty;
 
   const maxCount = Math.max(...stats.map(s => s.count));
   const minCount = Math.max(5, maxCount * 0.04);          // drop sparse hours
@@ -258,7 +264,7 @@ const STARS: { x: number; y: number; r: number; d: number }[] = [
   { x: 30, y: 112, r: 0.7, d: 1.1 }, { x: 170, y: 116, r: 0.7, d: 1.4 },
 ];
 
-export default function DiscountAdvisory({ timeSeries }: Props) {
+export default function DiscountAdvisory({ timeSeries, selectedModel }: Props) {
   // Ticks every 10s so the sun/moon hand glides smoothly (CSS transition carries
   // the motion between ticks) instead of jumping minute-to-minute.
   const [now, setNow] = useState(() => new Date());
@@ -272,8 +278,8 @@ export default function DiscountAdvisory({ timeSeries }: Props) {
   }, []);
   const offsetStr = useMemo(() => fmtOffset(-now.getTimezoneOffset() / 60), [now]);
 
-  const stats = useMemo(() => buildLocalHourStats(timeSeries), [timeSeries]);
-  const advisory = useMemo(() => buildAdvisory(stats, now), [stats, now]);
+  const stats = useMemo(() => buildLocalHourStats(timeSeries, selectedModel), [timeSeries, selectedModel]);
+  const advisory = useMemo(() => buildAdvisory(stats, now, selectedModel), [stats, now, selectedModel]);
 
   const gid = 'adv-' + useId().replace(/:/g, '');
 
@@ -308,7 +314,9 @@ export default function DiscountAdvisory({ timeSeries }: Props) {
               When should you use Lilac?
             </h2>
             <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-1">
-              your local read on when the discounts land — keyed to your browser timezone
+              {selectedModel
+                ? `your local read on ${MODEL_LABELS[selectedModel] || selectedModel}'s discounts — keyed to your browser timezone`
+                : 'your local read on when the discounts land across all tracked models — keyed to your browser timezone'}
             </p>
           </div>
         </div>
@@ -506,7 +514,7 @@ export default function DiscountAdvisory({ timeSeries }: Props) {
           ) : (
             <div className="flex items-center justify-center h-full min-h-[120px]">
               <p className="text-[12px] text-zinc-400 dark:text-zinc-500 text-center leading-relaxed max-w-[280px]">
-                Not enough discount history yet to advise you. Once the tracker has a day or two of snapshots, your personalized best-time window will appear here.
+                Not enough discount history yet to advise you{selectedModel ? ` on ${MODEL_LABELS[selectedModel] || selectedModel}` : ''}. Once the tracker has a day or two of snapshots, your personalized best-time window will appear here.
               </p>
             </div>
           )}
