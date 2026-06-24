@@ -20,7 +20,7 @@ The Lilac `/status` API returns per-model:
 - **TTFB** — time to first byte
 - **Uptime %** — 24h uptime
 
-Lilac claims these rates lock in every ~10 minutes. This tracker polls at 60s intervals (adapting to 30s when state changes) to capture those transitions with high resolution. Over a year this produces ~52K–105K entries — trivial for JSONL.
+Lilac claims these rates lock in every ~10 minutes. This tracker polls every 10 minutes (adapting to 60s for 10 minutes when a state change is detected) to capture those transitions with high resolution. Over a year this produces ~5.3K entries — trivial for JSONL.
 
 ## Quick start
 
@@ -62,17 +62,17 @@ Vite + React + Tailwind + Recharts — styled after pi-tps-web.
 
 | Condition | Interval |
 |-----------|----------|
-| Default | 60s |
-| Supply state change detected | 30s for 5 minutes |
+| Default | 600s (10 min) |
+| Supply state change detected | 60s for 10 minutes |
 
-This gives higher resolution around transitions while keeping baseline cost low (~52K entries/year at 60s vs ~105K at 30s).
+This gives higher resolution around transitions while keeping baseline cost low (~5.3K entries/year at the 10-minute baseline).
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LILAC_API_KEY` | — | Required. Your Lilac API key |
-| `POLL_INTERVAL` | `60` | Base polling interval in seconds |
+| `POLL_INTERVAL` | `600` | Base polling interval in seconds |
 | `PORT` | `3100` | Server port |
 | `DATA_FILE` | `./data/snapshots.jsonl` | Path to JSONL storage |
 
