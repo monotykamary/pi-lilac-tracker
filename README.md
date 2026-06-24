@@ -37,6 +37,21 @@ npm run dev
 
 The server starts on `http://localhost:3100` and the Vite dev server on `http://localhost:5173` (which proxies `/api` to the backend).
 
+### Keeping dev data fresh
+
+Dev runs aren't 24/7, so `data/snapshots.jsonl` goes stale when you're not polling. Production (Railway) polls continuously and serves the full series at `/api/snapshots`, so you can refresh local dev data from it:
+
+```bash
+npm run pull:prod            # append only rows newer than your newest local snapshot
+npm run pull:prod -- --reset  # replace local entirely with the prod series
+```
+
+The pull only ever writes to `data/` (gitignored), and refuses to write to any path git tracks — so upstream stays clean. Override the source or target with env vars:
+
+```bash
+PROD_URL=https://pi-lilac-tracker.up.railway.app DATA_FILE=./data/snapshots.jsonl npm run pull:prod
+```
+
 ## Architecture
 
 ### Server (`server/index.ts`)
@@ -75,6 +90,7 @@ This gives higher resolution around transitions while keeping baseline cost low 
 | `POLL_INTERVAL` | `600` | Base polling interval in seconds |
 | `PORT` | `3100` | Server port |
 | `DATA_FILE` | `./data/snapshots.jsonl` | Path to JSONL storage |
+| `PROD_URL` | `https://pi-lilac-tracker.up.railway.app` | Production base URL for `npm run pull:prod` |
 
 ## Data format
 

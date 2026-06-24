@@ -10,6 +10,7 @@
     "build": "tsc -b && vite build",
     "gen:world": "node scripts/gen-world-land.cjs",
     "gen:tz": "node scripts/gen-timezones.cjs",
+    "pull:prod": "node scripts/pull-prod-data.cjs",
     "lint": "eslint .",
     "typecheck": "tsc -b",
     "start": "node server/index.ts"
