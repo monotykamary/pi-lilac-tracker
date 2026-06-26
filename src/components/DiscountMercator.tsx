@@ -47,6 +47,20 @@ interface DiscountMercatorProps {
 // afternoon/evening = the Americas' daytime, so the Americas light up.
 const COLS = 144; // 144 longitude bands (2.5° each)
 const COL_W = PLOT_W / COLS;
+// Recency decay for the activity heatmap. Past history must not drown the
+// live signal: a sudden discount shift that only just started is a handful of
+// fresh observations against ~240 accumulated per bin, so it vanishes into
+// the average. Each observation is weighted by how recently it was made — a
+// ~2-day half-life keeps the daily noon-binned pattern (each longitude lights
+// up on the days it actually carried a discount) while pulling recent days
+// forward so a change-in-progress registers brightly instead of being
+// averaged away. Today carries ~half each bin's weighted mass, so "now" stays
+// visible against history without erasing it.
+const RECENCY_HALFLIFE_MS = 2 * 24 * 60 * 60 * 1000;
+function recencyWeight(ageMs: number): number {
+  if (ageMs <= 0) return 1;
+  return Math.pow(0.5, ageMs / RECENCY_HALFLIFE_MS);
+}
 const yMerc = (latDeg: number) =>
   Math.log(Math.tan(Math.PI / 4 + (latDeg * Math.PI / 180) / 2));
 // Polar squish constants — MUST match squishY in scripts/gen-world-land.cjs &
@@ -156,7 +170,8 @@ const REGIONS: { lon: number; label: string }[] = [
 ];
 
 interface BinActivity {
-  count: number;
+  count: number;            // summed recency weight — drives opacity + dominant tier
+  rawObservations: number;  // raw count, for the tooltip's "×N observations"
   byTier: Map<number, number>;
   byModel: Map<string, number>;
   // discount_percent of every observation, per model — so the sidebar can
@@ -167,7 +182,15 @@ interface BinActivity {
 }
 
 function emptyBin(): BinActivity {
-  return { count: 0, byTier: new Map(), byModel: new Map(), byModelDiscounts: new Map(), states: new Set() };
+  return { count: 0, rawObservations: 0, byTier: new Map(), byModel: new Map(), byModelDiscounts: new Map(), states: new Set() };
+}
+
+// Share of a bin's recency-weighted mass attributable to one tier/model — the
+// weights are fractional, so render the tooltip breakdown as "~42% of recent"
+// rather than an opaque weighted count.
+function fmtShare(part: number, total: number): string {
+  if (total <= 0) return '—';
+  return `${Math.round((part / total) * 100)}%`;
 }
 
 // For 'all' (multi-tier) mode, a bin's color is its dominant tier (the one
@@ -204,6 +227,7 @@ function buildActivity(
   timeSeries: Record<string, DiscountPoint[]>,
   discFilter: number | 'all',
   selectedModel: string | null,
+  now: Date,
 ): { cols: BinActivity[]; tzBins: BinActivity[]; maxCountCols: number; maxCountTz: number; hasData: boolean } {
   const cols: BinActivity[] = Array.from({ length: COLS }, emptyBin);
   const tzBins: BinActivity[] = Array.from({ length: TIMEZONE_OFFSETS.length }, emptyBin);
@@ -218,12 +242,17 @@ function buildActivity(
       any = true;
       const d = new Date(p.timestamp);
       const utcH = d.getUTCHours() + d.getUTCMinutes() / 60 + d.getUTCSeconds() / 3600;
+      // Recency weight: fresh observations count more so a change-in-progress
+      // surfaces instead of being averaged into history. Shared across both
+      // binning modes (they're the same observations, differently grouped).
+      const wgt = recencyWeight(now.getTime() - d.getTime());
       // longitude band at solar noon (longitude mode)
       const col = colForNoonMeridian(utcH);
       const c = cols[col];
-      c.count += 1;
-      c.byTier.set(tier, (c.byTier.get(tier) ?? 0) + 1);
-      c.byModel.set(id, (c.byModel.get(id) ?? 0) + 1);
+      c.count += wgt;
+      c.rawObservations += 1;
+      c.byTier.set(tier, (c.byTier.get(tier) ?? 0) + wgt);
+      c.byModel.set(id, (c.byModel.get(id) ?? 0) + wgt);
       let cD = c.byModelDiscounts.get(id);
       if (!cD) { cD = []; c.byModelDiscounts.set(id, cD); }
       cD.push(p.snapshot.discount_percent);
@@ -235,9 +264,10 @@ function buildActivity(
       const noonNorm = noonOff > 12 ? noonOff - 24 : noonOff; // (-12, 12]
       const ti = NOON_OFFSET_TO_TZ(noonNorm);
       const b = tzBins[ti];
-      b.count += 1;
-      b.byTier.set(tier, (b.byTier.get(tier) ?? 0) + 1);
-      b.byModel.set(id, (b.byModel.get(id) ?? 0) + 1);
+      b.count += wgt;
+      b.rawObservations += 1;
+      b.byTier.set(tier, (b.byTier.get(tier) ?? 0) + wgt);
+      b.byModel.set(id, (b.byModel.get(id) ?? 0) + wgt);
       let bD = b.byModelDiscounts.get(id);
       if (!bD) { bD = []; b.byModelDiscounts.set(id, bD); }
       bD.push(p.snapshot.discount_percent);
@@ -273,20 +303,22 @@ export default function DiscountMercator({
   // data stays vivid while the ambient cycle reads behind it.
   const [dayNight, setDayNight] = useState(true);
 
-  const focused = !!selectedModel;
-
-  const { cols, tzBins, maxCountCols, maxCountTz, hasData } = useMemo(
-    () => buildActivity(timeSeries, discFilter, selectedModel),
-    [timeSeries, discFilter, selectedModel],
-  );
-
   // Real-time noon meridian: where on earth is it local noon right now? Marches
-  // westward ~15°/hr as the earth rotates. Ticks once a minute.
+  // westward ~15°/hr as the earth rotates. Ticks once a minute. Declared early
+  // because both the recency-weighted activity heatmap and the live noon
+  // meridian depend on it.
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 60_000);
     return () => clearInterval(t);
   }, []);
+
+  const focused = !!selectedModel;
+
+  const { cols, tzBins, maxCountCols, maxCountTz, hasData } = useMemo(
+    () => buildActivity(timeSeries, discFilter, selectedModel, now),
+    [timeSeries, discFilter, selectedModel, now],
+  );
   const nowNoon = useMemo(() => {
     const utcH = now.getUTCHours() + now.getUTCMinutes() / 60;
     let lon = (12 - utcH) * 15;
@@ -761,7 +793,7 @@ export default function DiscountMercator({
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
                   <div className="tooltip-row-flex" style={{ marginBottom: 2 }}>
-                    <span className="tooltip-row-label">×{activeBin.count} observations</span>
+                    <span className="tooltip-row-label">×{activeBin.rawObservations} observations</span>
                     <span className="tooltip-row-value">{[...activeBin.states].join('/')}</span>
                   </div>
                   {discFilter === 'all' && activeTierEntries.map(({ t, n }) => (
@@ -770,7 +802,7 @@ export default function DiscountMercator({
                         <span className="tooltip-dot" style={{ background: discountColor(t) }} />
                         <span className="tooltip-row-label">{t}% off</span>
                       </span>
-                      <span className="tooltip-row-value">×{n}</span>
+                      <span className="tooltip-row-value">{fmtShare(n, activeBin.count)} of recent</span>
                     </div>
                   ))}
                 </div>
@@ -793,12 +825,12 @@ export default function DiscountMercator({
                             <span className="text-[11px] font-semibold text-zinc-800 dark:text-zinc-200">{MODEL_LABELS[id]}</span>
                           </span>
                           <span className="tooltip-row-value" style={{ color: discounts.length ? discountColor(dom) : undefined }}>
-                            {discounts.length ? `${dom}% off` : `×${n}`}
+                            {discounts.length ? `${dom}% off` : fmtShare(n, activeBin!.count)}
                           </span>
                         </div>
                         <div className="tooltip-row-flex">
                           <span className="tooltip-row-label">
-                            ×{n} at this noon{distinct.length > 1 ? ` · ${distinct.join('/')}%` : ''}
+                            {fmtShare(n, activeBin!.count)} of recent here{distinct.length > 1 ? ` · ${distinct.join('/')}%` : ''}
                           </span>
                         </div>
                       </div>
@@ -843,6 +875,9 @@ export default function DiscountMercator({
                   );
                 })}
               </div>
+              <p className="tooltip-footer">
+                recent weighted by recency — sudden shifts show brightly against history.
+              </p>
               <p className="tooltip-footer tooltip-section">
                 hover the map to inspect a longitude or civil timezone at its local noon.
               </p>
@@ -933,7 +968,7 @@ export default function DiscountMercator({
               ))}
             </div>
             <span className="text-[10px] text-zinc-400 dark:text-zinc-500 mx-1">·</span>
-            <span className="text-[10px] text-zinc-500 dark:text-zinc-400">brighter = more frequent</span>
+            <span className="text-[10px] text-zinc-500 dark:text-zinc-400">brighter = more frequent lately</span>
           </>
         ) : (
           <>
