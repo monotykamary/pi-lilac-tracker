@@ -23,7 +23,7 @@ import type { ModelSnapshot } from '../types';
 //
 //   smoothedDiscount = rollingMean(discount, MA_W)   // smooth quantized jumps
 //   target_t   = BASE * (1 + SLOPE * smoothedDiscount_t / 100)
-//   price_t    = price_{t-1} + KAPPA*(target_t - price_{t-1}) + NOISE_t
+//   price_t    = target_t + NOISE_t + DRIFT_t   (NOISE = two OU streams; DRIFT = slow wander)
 //
 //   - TREND (target): the REAL per-tick discount, smoothed. When the discount
 //     deepens the target rises; when it shrinks the target falls — exactly
@@ -41,7 +41,9 @@ import type { ModelSnapshot } from '../types';
 // wicks are synthetic. We state this plainly rather than imply the raw
 // metrics oscillate the way a market does. Candles are non-overlapping
 // sample-count buckets sized to a target count; inactive polling gaps are
-// collapsed so active sessions read consecutively. MA20 (amber) + MA50 (sky).
+// collapsed so active sessions read consecutively, but each break now opens
+// the next session with a small price gap (and bucket edges snap to breaks so
+// the gap reads as open≠prev-close, not a bridging candle). MA20 (amber) + MA50 (sky).
 
 type CandleDensity = 60 | 120 | 240;
 
@@ -68,7 +70,7 @@ const MA_SLOW_PERIOD = 50;
 //   smoothedDiscount = rollingMean(discount, MA_W)         // smooths the
 //                                                    // ±25/50/75% quantized jumps
 //   target_t   = BASE * (1 + SLOPE * smoothedDiscount_t / 100)
-//   noise_t    = slow_t + fast_t                       (two OU streams, below)
+//   noise_t    = slow_t + fast_t + drift_t + gap_t     (streams, below)
 //   price_t    = target_t + noise_t
 //
 // Why OU and not a random walk: Lilac's discount jumps in ±25/50/75 quanta, so
@@ -84,6 +86,13 @@ const MA_SLOW_PERIOD = 50;
 // (high κ → oscillates within a bucket → high/low land mid-bucket → real
 // WICKS) cuts wickless candles to ~5% and gives natural body+wick shapes.
 //
+// A third stream — a slow regime DRIFT — is added to the price (see DRIFT_*
+// below). The two streams above are anti-persistent (±K), so they oscillate;
+// the drift is persistent (φ≈1) so it meanders over many candles instead. It
+// exists to break the flat ceiling that forms when the real discount pins at
+// its 75% cap and the target saturates at ~190: without it the index glues to
+// that level for as long as the discount holds, painting an artificial wall.
+//
 //   - SLOPE: target sensitivity to discount. A 50% discount swing → ~60%
 //           target move, enough that rising-discount models trend up and
 //           falling-discount models trend down (opposite trends, opposite
@@ -95,6 +104,12 @@ const MA_SLOW_PERIOD = 50;
 //     looked identical.
 //   - MA_W: rolling-mean window on the raw discount — turns the quantized
 //           ±75% jumps into a smooth level so the target drifts gradually.
+//   - DRIFT (PHI/AMP): persistent low-frequency wander added to the price so a
+//           discount pinned at its cap doesn't flatline the index; σ ≈ AMP.
+//   - GAP (THRESHOLD/PCT/FILL): at a polling break the new session opens gapped
+//           from the last close (±~3–6%), then the gap decays (fills) so the
+//           price re-anchors to the target; buckets snap to breaks so the gap
+//           renders as open≠prev-close, not a bridging candle.
 const SLOPE = 1.2;    // target = BASE*(1 + SLOPE*disc/100)
 const MA_W = 40;     // rolling-mean window for the discount level
 const BASE_PRICE = 100;
@@ -102,6 +117,29 @@ const BASE_PRICE = 100;
 const K1 = 0.02, S1 = 0.6;
 // Fast OU (wicks): high κ → oscillates within a bucket → high/low off the body.
 const K2 = 0.5, S2 = 3.0;
+
+// Slow regime drift added to the price. The discount-driven target saturates
+// when the real discount pins at its cap (75% → target = 190), which would
+// paint a dead-flat ceiling — the "wall." A persistent low-frequency wander
+// (a φ≈1 AR(1), not the anti-persistent ±K noise above) gives that plateau a
+// gentle natural undulation and lifts the MA lines off the ceiling too.
+// Zero-mean and per-model seeded, so it modulates every model differently
+// without overriding the discount-driven direction (amplitude ≪ the 0→90
+// target swing).
+const DRIFT_PHI = 0.99; // persistence → multi-candle meander
+const DRIFT_AMP = 10;   // stationary σ of the drift (gentle ±~20 wander)
+
+// Session gaps. Inactive polling windows (overnight, etc.) are collapsed on
+// the axis, but the price used to flow continuously across them — a 6h time
+// jump with no price reaction reads as unrealistic. So at each break the new
+// session opens with a small gap from the last close (proportional to it, and
+// mildly larger for longer breaks), then the gap level slowly decays so the
+// price drifts back toward the discount-driven target (a "fill"). Bucket
+// boundaries snap to breaks (see bucketCandles) so the gap shows as a clean
+// open≠prev-close between adjacent candles.
+const GAP_THRESHOLD_MS = 60 * 60 * 1000; // >1h between ticks = a polling break
+const GAP_PCT = 0.03;   // gap up to ±3% of last close (×dtScale, capped ×2)
+const GAP_FILL = 0.995; // per-tick decay → gap holds a few hours, then fills
 
 interface Point { timestamp: string; snapshot: ModelSnapshot }
 
@@ -172,36 +210,58 @@ function rollingMean(vals: number[], w: number): number[] {
 }
 
 // Build the synthetic price index = smooth target (from the REAL discount)
-// plus two mean-reverting (Ornstein-Uhlenbeck) noise streams: a slow one for
-// candle bodies/direction and a fast one for wicks. See the parameter comment
-// above for why each piece is here. Mean-reversion (not a random walk) bounds
-// per-tick moves so candles stay natural; the two-κ split keeps wicks visible.
+// plus three additive streams: slow + fast OU noise (bodies/wicks), a
+// persistent regime drift (breaks discount-cap flatlines), and a session-gap
+// level that jumps at polling breaks and slowly fills (see constants above).
 function buildIndex(ticks: Tick[], seedOffset: number): number[] {
   if (ticks.length === 0) return [];
   const discs = ticks.map(t => t.discount);
   const smoothed = rollingMean(discs, MA_W);
-  let z1 = 0, z2 = 0;
+  let z1 = 0, z2 = 0, z3 = 0, z4 = 0;
   const n1 = S1 * Math.sqrt(2 * K1);
   const n2 = S2 * Math.sqrt(2 * K2);
+  // Drift innovation sized so the AR(1) stationary σ ≈ DRIFT_AMP.
+  const a3 = DRIFT_AMP * Math.sqrt(3 * (1 - DRIFT_PHI * DRIFT_PHI));
+  let breaks = 0; // session-break counter, for distinct per-gap seeds
   const prices: number[] = [BASE_PRICE * (1 + SLOPE * smoothed[0] / 100)];
   for (let i = 1; i < ticks.length; i++) {
     z1 = K1 * (0 - z1) + n1 * hash(seedOffset + i * 7919);
     z2 = K2 * (0 - z2) + n2 * hash(seedOffset + i * 7919 + 1);
+    z3 = DRIFT_PHI * z3 + a3 * hash(seedOffset + i * 7919 + 2);
+    // Session-gap level: decays toward 0 each tick (the gap "fills"), and
+    // jumps when a polling break is crossed so the new session opens gapped
+    // from the last close instead of flowing continuously across dead time.
+    z4 *= GAP_FILL;
+    const dt = ticks[i].realTime - ticks[i - 1].realTime;
+    if (dt > GAP_THRESHOLD_MS) {
+      const dtScale = Math.min(2, Math.sqrt(dt / GAP_THRESHOLD_MS));
+      z4 += hash(seedOffset + 104729 * ++breaks + 500003) * GAP_PCT * prices[i - 1] * dtScale;
+    }
     const target = BASE_PRICE * (1 + SLOPE * smoothed[i] / 100);
-    prices.push(target + z1 + z2);
+    prices.push(target + z1 + z2 + z3 + z4);
   }
   return prices;
 }
 
-// NON-overlapping sample-count buckets sized to a target candle count.
+// NON-overlapping sample-count buckets sized to a target candle count. A bucket
+// never spans a polling break: if a session gap (realTime jump > GAP_THRESHOLD_MS)
+// falls inside the next window, the bucket is shortened to end just before it, so
+// the break lands cleanly BETWEEN candles — that's what lets the session-gap
+// price jump (see buildIndex) render as a visible gap rather than a tall candle
+// bridging two sessions.
 function bucketCandles(prices: number[], realTimes: number[], target: number): Candle[] {
   if (prices.length < 2) return [];
   const w = Math.max(2, Math.floor(prices.length / target));
   const candles: Candle[] = [];
-  for (let i = 0; i + w <= prices.length; i += w) {
+  let i = 0;
+  while (i + w <= prices.length) {
+    let end = i + w;
+    for (let j = i + 1; j < end; j++) {
+      if (realTimes[j] - realTimes[j - 1] > GAP_THRESHOLD_MS) { end = j; break; }
+    }
     let high = -Infinity;
     let low = Infinity;
-    for (let j = i; j < i + w; j++) {
+    for (let j = i; j < end; j++) {
       const v = prices[j];
       if (v > high) high = v;
       if (v < low) low = v;
@@ -209,9 +269,10 @@ function bucketCandles(prices: number[], realTimes: number[], target: number): C
     candles.push({
       open: prices[i],
       high, low,
-      close: prices[i + w - 1],
-      realTime: realTimes[i + w - 1],
+      close: prices[end - 1],
+      realTime: realTimes[end - 1],
     });
+    i = end;
   }
   return candles;
 }
@@ -244,7 +305,7 @@ interface CandlestickCardProps {
 }
 
 export default function CandlestickCard({ timeSeries, selectedModel, onSelectModel }: CandlestickCardProps) {
-  const [density, setDensity] = useState<CandleDensity>(60);
+  const [density, setDensity] = useState<CandleDensity>(120);
   const [showMA, setShowMA] = useState(true);
   const [isDark, setIsDark] = useState(false);
 
