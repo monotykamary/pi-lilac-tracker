@@ -543,9 +543,6 @@ export default function CandlestickCard({ timeSeries, selectedModel, onSelectMod
             <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-500 uppercase tracking-wide">
               {selectedModel ? (MODEL_LABELS[selectedModel] || selectedModel) : 'all models · market index'}
             </span>
-            <span className="text-[10px] text-zinc-400 dark:text-zinc-500 metric-mono" title="Synthetic Lilac Discount Index — a fun market perspective. Trend driven by real discount changes; wicks are synthetic volatility, since the raw metrics are too smooth to candle naturally.">
-              synthetic
-            </span>
           </div>
         </div>
 
