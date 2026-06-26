@@ -40,6 +40,40 @@ function buildLocalHourStats(timeSeries: Record<string, DiscountPoint[]>, select
   }));
 }
 
+// ── Realtime current discount ───────────────────────────────────────────────
+// The prime/dead windows above are *historical* (averaged over every
+// observation binned by local hour), so they answer "when do discounts tend to
+// land in your day?". But the right-now nudge must answer a more live
+// question: "what is Lilac charging *this minute*?". So we pull the latest
+// snapshot's discount and fold it into the verdict — a deep live deal can
+// override a historically-dry window (a flash sale), and a shallow live deal
+// tempers a historically-prime one (the clock says prime, but Lilac's only
+// running 25% off right now, so don't rush).
+interface RealtimeDiscount { percent: number; ageMs: number; }
+
+function currentDiscountFor(
+  timeSeries: Record<string, DiscountPoint[]>,
+  selectedModel: string | null,
+  now: Date,
+): RealtimeDiscount | null {
+  // For a single model: its latest discount. For the pooled view: the best
+  // discount across the latest snapshot of every tracked model — if *any*
+// model is at a deep cut right now, that's the actionable signal (go use
+  // that one).
+  let best = -1, bestAge = Infinity, any = false;
+  const models = selectedModel ? [selectedModel] : TRACKED_MODELS;
+  for (const id of models) {
+    const pts = timeSeries[id] || [];
+    if (!pts.length) continue;
+    any = true;
+    const p = pts[pts.length - 1];
+    const disc = p.snapshot.discount_percent;
+    const age = now.getTime() - new Date(p.timestamp).getTime();
+    if (disc > best) { best = disc; bestAge = age; }
+  }
+  return any ? { percent: Math.max(0, best), ageMs: Math.max(0, bestAge) } : null;
+}
+
 // ── Contiguous-run finder with midnight wraparound ───────────────────────────
 // A prime window can cross midnight (e.g. 22:00→02:00), so runs are found on a
 // doubled ring and the seam is stitched when a run ends at hour 23 and another
@@ -122,14 +156,14 @@ interface Advisory {
   hasData: boolean;
   headline: string;
   detail: string;
-  rightNow: 'prime' | 'dead' | 'neutral';
+  rightNow: 'prime' | 'warm' | 'dead' | 'neutral';
   rightNowText: string;
   prime: Window | null;
   dead: Window | null;
   bursts: boolean;
 }
 
-function buildAdvisory(stats: HourStat[], now: Date, selectedModel: string | null): Advisory {
+function buildAdvisory(stats: HourStat[], now: Date, selectedModel: string | null, currentDiscount: RealtimeDiscount | null): Advisory {
   const total = stats.reduce((a, s) => a + s.count, 0);
   const empty: Advisory = {
     hasData: false, headline: '', detail: '', rightNow: 'neutral', rightNowText: '',
@@ -196,15 +230,54 @@ function buildAdvisory(stats: HourStat[], now: Date, selectedModel: string | nul
   // bursts = several short windows instead of one long one → batch heavy runs.
   const bursts = goodRuns.length >= 2 && (prime?.len ?? 0) < 7;
 
-  // right-now nudge
+  // ── right-now nudge, grounded in the live discount ────────────────────────
+  // The prime/dead windows come from historical local-hour stats; the nudge
+  // must answer "what is Lilac charging *right now*?". A deep current deal
+  // overrides a historically-dry window (flash sale), and a shallow current
+  // deal tempers a historically-prime one (clock says go, but ~25% off this
+  // minute — wait for the real cuts). 'warm' is the amber middle: not a blind
+  // "go", not a full hold.
+  type CurTier = 'deep' | 'modest' | 'priced' | 'unknown';
+  const curTier: CurTier = currentDiscount == null
+    ? 'unknown'
+    : currentDiscount.percent >= 50 ? 'deep'
+    : currentDiscount.percent > 0 ? 'modest'
+    : 'priced';
+  const pct = currentDiscount?.percent;
+  const fragGo = pct != null ? `~${pct}% off right now, go.` : `deal live right now, go.`;
+  const fragPct = pct != null ? `~${pct}% off, go.` : `go.`;
   let rightNow: Advisory['rightNow'] = 'neutral';
   let rightNowText = '';
   if (prime && inWindow(localNowH, prime.start, prime.end)) {
-    rightNow = 'prime';
-    rightNowText = `That's right now for you — go.`;
+    if (curTier === 'deep') {
+      rightNow = 'prime';
+      rightNowText = `That's right now for you — ${fragPct}`;
+    } else if (curTier === 'modest') {
+      rightNow = 'warm';
+      rightNowText = `Your prime window — but only ~${pct!}% off right now; the deep cuts come later.`;
+    } else if (curTier === 'priced') {
+      rightNow = 'warm';
+      rightNowText = `Your prime window — but Lilac's at full price right now, wait for the cut.`;
+    } else {
+      // no live read available → keep the historical nudge but soften it
+      rightNow = 'warm';
+      rightNowText = `Your prime window right now — aim for the deep cuts.`;
+    }
   } else if (dead && inWindow(localNowH, dead.start, dead.end)) {
-    rightNow = 'dead';
-    rightNowText = prime ? `Dry spell right now — hold off until ${fmtClock(prime.start)}.` : `Dry spell right now.`;
+    if (curTier === 'deep') {
+      // historically a dry spell, but a live flash deal overrides it
+      rightNow = 'prime';
+      rightNowText = `Usually a dry spell here — but ${fragGo}`;
+    } else {
+      rightNow = 'dead';
+      rightNowText = prime ? `Dry spell right now — hold off until ${fmtClock(prime.start)}.` : `Dry spell right now.`;
+    }
+  } else if (curTier === 'deep') {
+    // no strong historical window at this hour, but there's a live deep deal — surface it
+    rightNow = 'prime';
+    rightNowText = prime
+      ? `Outside your usual prime window — but ${fragGo}`
+      : `No usual prime window here — but ${fragGo}`;
   }
 
   // supporting detail
@@ -279,7 +352,12 @@ export default function DiscountAdvisory({ timeSeries, selectedModel }: Props) {
   const offsetStr = useMemo(() => fmtOffset(-now.getTimezoneOffset() / 60), [now]);
 
   const stats = useMemo(() => buildLocalHourStats(timeSeries, selectedModel), [timeSeries, selectedModel]);
-  const advisory = useMemo(() => buildAdvisory(stats, now, selectedModel), [stats, now, selectedModel]);
+  const currentDiscount = useMemo(() => currentDiscountFor(timeSeries, selectedModel, now), [timeSeries, selectedModel, now]);
+  // A live deep deal is worth surfacing even before enough history accrues to
+  // draw a prime-window pattern — so the advisory is never "blind" to a flash
+  // sale just because the series is young.
+  const liveGo = currentDiscount != null && currentDiscount.percent >= 50;
+  const advisory = useMemo(() => buildAdvisory(stats, now, selectedModel, currentDiscount), [stats, now, selectedModel, currentDiscount]);
 
   const gid = 'adv-' + useId().replace(/:/g, '');
 
@@ -473,7 +551,9 @@ export default function DiscountAdvisory({ timeSeries, selectedModel }: Props) {
                     style={
                       advisory.rightNow === 'prime'
                         ? { backgroundColor: 'rgba(5,150,105,0.12)', color: '#059669' }
-                        : { backgroundColor: 'rgba(220,38,38,0.10)', color: '#dc2626' }
+                        : advisory.rightNow === 'warm'
+                          ? { backgroundColor: 'rgba(217,119,6,0.12)', color: '#d97706' }
+                          : { backgroundColor: 'rgba(220,38,38,0.10)', color: '#dc2626' }
                     }
                   >
                     <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'currentColor' }} />
@@ -512,10 +592,21 @@ export default function DiscountAdvisory({ timeSeries, selectedModel }: Props) {
               </p>
             </>
           ) : (
-            <div className="flex items-center justify-center h-full min-h-[120px]">
+            <div className="flex flex-col items-center justify-center h-full min-h-[120px]">
               <p className="text-[12px] text-zinc-400 dark:text-zinc-500 text-center leading-relaxed max-w-[280px]">
                 Not enough discount history yet to advise you{selectedModel ? ` on ${MODEL_LABELS[selectedModel] || selectedModel}` : ''}. Once the tracker has a day or two of snapshots, your personalized best-time window will appear here.
               </p>
+              {liveGo && (
+                <div className="mt-3 flex justify-center">
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold"
+                    style={{ backgroundColor: 'rgba(5,150,105,0.12)', color: '#059669' }}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'currentColor' }} />
+                    Live deal right now — ~{currentDiscount!.percent}% off, go{selectedModel ? '' : ' (best model)'}.
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>
