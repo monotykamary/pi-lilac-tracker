@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useRef } from 'react';
+import { memo, useMemo } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts';
@@ -15,9 +15,10 @@ interface TimelineChartProps {
   colorByModel: Record<string, string>;
   labelByModel: Record<string, string>;
   formatValue?: (v: number) => string;
+  theme: 'light' | 'dark';
 }
 
-export default function TimelineChart({
+function TimelineChart({
   title,
   timeSeries,
   selectedModel,
@@ -27,17 +28,11 @@ export default function TimelineChart({
   colorByModel,
   labelByModel,
   formatValue = (v) => v.toFixed(1),
+  theme,
 }: TimelineChartProps) {
-  const [isDark, setIsDark] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const check = () => setIsDark(document.documentElement.classList.contains('dark'));
-    check();
-    const obs = new MutationObserver(check);
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-    return () => obs.disconnect();
-  }, []);
+  // Theme is owned by App's useTheme and passed in, instead of each chart
+  // spinning up its own MutationObserver on <html> (there were four of these
+  // observing the same attribute).
 
   const chartData = useMemo(() => {
     const timestamps = new Set<string>();
@@ -87,13 +82,14 @@ export default function TimelineChart({
     return `${d.getMonth() + 1}/${d.getDate()} ${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
   };
 
+  const isDark = theme === 'dark';
   const textColor = isDark ? '#a1a1aa' : '#71717a';
   const gridColor = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
 
   return (
     <div className="card-surface p-5">
       <h2 className="text-sm font-semibold text-zinc-800 dark:text-zinc-300 mb-4">{title}</h2>
-      <div ref={containerRef} className="w-full min-w-0 relative" style={{ height: 280 }}>
+      <div className="w-full min-w-0 relative" style={{ height: 280 }}>
         {!hasData ? (
           <div className="absolute inset-0 flex items-center justify-center">
             <p className="text-xs text-zinc-400 dark:text-zinc-500">No data available</p>
@@ -159,3 +155,5 @@ export default function TimelineChart({
     </div>
   );
 }
+
+export default memo(TimelineChart);

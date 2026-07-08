@@ -85,9 +85,39 @@ function ensureDataDir() {
   }
 }
 
+// In-memory cache for the snapshot count + last snapshot. The JSONL file only
+// grows and this process is its sole writer, so both can be cached once at
+// startup and bumped on each append — turning /api/status (polled ~every 10s)
+// and the per-poll dedup check from a full 16MB file read into an O(1) lookup.
+// readSnapshots() still reads the whole file, but it's only called on the
+// client's mount / new-data / manual-refresh now that polling is count-gated.
+let lineCountCache: number | null = null;
+let lastSnapshotCache: Snapshot | null = null;
+
+function warmSnapshotCache(): void {
+  if (lineCountCache !== null) return;
+  if (!fs.existsSync(DATA_FILE)) {
+    lineCountCache = 0;
+    lastSnapshotCache = null;
+    return;
+  }
+  const lines = fs.readFileSync(DATA_FILE, "utf8").split("\n").filter(Boolean);
+  lineCountCache = lines.length;
+  if (lines.length > 0) {
+    try {
+      lastSnapshotCache = JSON.parse(lines[lines.length - 1]) as Snapshot;
+    } catch {
+      lastSnapshotCache = null;
+    }
+  }
+}
+
 function appendSnapshot(snapshot: Snapshot): void {
   ensureDataDir();
   fs.appendFileSync(DATA_FILE, JSON.stringify(snapshot) + "\n");
+  warmSnapshotCache();
+  if (lineCountCache !== null) lineCountCache++;
+  lastSnapshotCache = snapshot;
 }
 
 function readSnapshots(from?: string, to?: string): Snapshot[] {
@@ -112,19 +142,13 @@ function readSnapshots(from?: string, to?: string): Snapshot[] {
 }
 
 function getLastSnapshot(): Snapshot | null {
-  if (!fs.existsSync(DATA_FILE)) return null;
-  const lines = fs.readFileSync(DATA_FILE, "utf8").split("\n").filter(Boolean);
-  if (lines.length === 0) return null;
-  try {
-    return JSON.parse(lines[lines.length - 1]) as Snapshot;
-  } catch {
-    return null;
-  }
+  warmSnapshotCache();
+  return lastSnapshotCache;
 }
 
 function getSnapshotCount(): number {
-  if (!fs.existsSync(DATA_FILE)) return 0;
-  return fs.readFileSync(DATA_FILE, "utf8").split("\n").filter(Boolean).length;
+  warmSnapshotCache();
+  return lineCountCache ?? 0;
 }
 
 // ─── Fetch from Lilac API ────────────────────────────────────────────────────

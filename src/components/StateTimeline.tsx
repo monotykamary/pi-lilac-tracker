@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import { MODEL_LABELS, MODEL_COLORS, SUPPLY_STATE_COLORS, TRACKED_MODELS } from '../types';
 import type { ModelSnapshot } from '../types';
 
@@ -7,8 +7,29 @@ interface StateTimelineProps {
   selectedModel: string | null;
 }
 
-export default function StateTimeline({ timeSeries, selectedModel }: StateTimelineProps) {
-  const models = selectedModel ? [selectedModel] : [...TRACKED_MODELS];
+function StateTimeline({ timeSeries, selectedModel }: StateTimelineProps) {
+  // Stable across renders — only changes when the selection actually changes.
+  // Previously this was a fresh array each render, which busted the memos
+  // below on every (status-driven) parent re-render.
+  const models = useMemo(
+    () => (selectedModel ? [selectedModel] : [...TRACKED_MODELS]),
+    [selectedModel],
+  );
+
+  const timeRange = useMemo(() => {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const id of models) {
+      const points = timeSeries[id] || [];
+      if (points.length > 0) {
+        const t0 = new Date(points[0].timestamp).getTime();
+        const t1 = new Date(points[points.length - 1].timestamp).getTime();
+        if (t0 < min) min = t0;
+        if (t1 > max) max = t1;
+      }
+    }
+    return { min, max };
+  }, [timeSeries, models]);
 
   const modelBlocks = useMemo(() => {
     const result: Record<string, { state: string; from: number; to: number }[]> = {};
@@ -28,25 +49,15 @@ export default function StateTimeline({ timeSeries, selectedModel }: StateTimeli
           blocks[blocks.length - 1].to = t;
         }
       }
+      // Extend the last block to the global max so the track always fills.
+      // Computed in the memo — never mutated during render (the old code wrote
+      // to the memoized blocks inside the JSX .map, which is a React
+      // anti-pattern and produced a stale last-block between renders).
+      if (blocks.length > 0) blocks[blocks.length - 1].to = timeRange.max;
       result[id] = blocks;
     }
     return result;
-  }, [timeSeries, models]);
-
-  const timeRange = useMemo(() => {
-    let min = Infinity;
-    let max = -Infinity;
-    for (const id of models) {
-      const points = timeSeries[id] || [];
-      if (points.length > 0) {
-        const t0 = new Date(points[0].timestamp).getTime();
-        const t1 = new Date(points[points.length - 1].timestamp).getTime();
-        if (t0 < min) min = t0;
-        if (t1 > max) max = t1;
-      }
-    }
-    return { min, max };
-  }, [timeSeries, models]);
+  }, [timeSeries, models, timeRange.max]);
 
   const totalMs = timeRange.max - timeRange.min;
 
@@ -105,11 +116,6 @@ export default function StateTimeline({ timeSeries, selectedModel }: StateTimeli
           const label = MODEL_LABELS[id] || id;
           const color = MODEL_COLORS[id] || '#71717a';
 
-          // Extend last block to global max so the track always fills
-          if (blocks.length > 0) {
-            blocks[blocks.length - 1].to = timeRange.max;
-          }
-
           return (
             <div key={id} className="flex items-center gap-3 min-w-0">
               <div className="w-24 shrink-0 flex items-center gap-2 min-w-0">
@@ -166,3 +172,5 @@ export default function StateTimeline({ timeSeries, selectedModel }: StateTimeli
     </div>
   );
 }
+
+export default memo(StateTimeline);

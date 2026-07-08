@@ -1,4 +1,4 @@
-import { useMemo, useRef, useEffect, useState } from 'react';
+import { memo, useMemo, useRef, useEffect, useState } from 'react';
 import {
   createChart, ColorType, CrosshairMode, CandlestickSeries, LineSeries, LineStyle,
 } from 'lightweight-charts';
@@ -302,12 +302,16 @@ interface CandlestickCardProps {
   timeSeries: Record<string, { timestamp: string; snapshot: ModelSnapshot; supply_updated_at: string | null }[]>;
   selectedModel: string | null;
   onSelectModel: (id: string) => void;
+  theme: 'light' | 'dark';
 }
 
-export default function CandlestickCard({ timeSeries, selectedModel, onSelectModel }: CandlestickCardProps) {
+function CandlestickCard({ timeSeries, selectedModel, onSelectModel, theme }: CandlestickCardProps) {
   const [density, setDensity] = useState<CandleDensity>(120);
   const [showMA, setShowMA] = useState(true);
-  const [isDark, setIsDark] = useState(false);
+  // Theme comes from App's useTheme as a prop — no per-chart MutationObserver
+  // on <html> (this and the timeline charts each had one watching the same
+  // attribute).
+  const isDark = theme === 'dark';
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -322,19 +326,11 @@ export default function CandlestickCard({ timeSeries, selectedModel, onSelectMod
   // if width is already present.
   const needsFitRef = useRef(true);
   // Latest derived series, pushed into the chart on creation AND on data change.
-  // The creation effect re-runs when the theme toggles (the theme MutationObserver
-  // fires on mount too), recreating the chart with fresh EMPTY series — but the
-  // data-push effect doesn't re-fire (candleData unchanged), so the chart stayed
-  // blank until a density change. Pushing latestDataRef after setup fixes that.
+  // The creation effect re-runs when the theme prop toggles (recreating the
+  // chart with fresh EMPTY series), but the data-push effect doesn't re-fire
+  // (candleData unchanged), so the chart stayed blank until a density change.
+  // Pushing latestDataRef after setup fixes that.
   const latestDataRef = useRef<{ candle: typeof candleData; fast: typeof maFastData; slow: typeof maSlowData } | null>(null);
-
-  useEffect(() => {
-    const check = () => setIsDark(document.documentElement.classList.contains('dark'));
-    check();
-    const obs = new MutationObserver(check);
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-    return () => obs.disconnect();
-  }, []);
 
   const candles = useMemo(() => {
     let pts: Point[];
@@ -616,3 +612,5 @@ export default function CandlestickCard({ timeSeries, selectedModel, onSelectMod
     </div>
   );
 }
+
+export default memo(CandlestickCard);

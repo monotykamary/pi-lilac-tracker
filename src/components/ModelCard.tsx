@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { clsx } from 'clsx';
 import { motion } from 'framer-motion';
 import { MODEL_LABELS, MODEL_COLORS, SUPPLY_STATE_COLORS, discountColor } from '../types';
@@ -7,7 +8,7 @@ interface ModelCardProps {
   modelId: string;
   latest: ModelSnapshot | null;
   isSelected: boolean;
-  onToggle: () => void;
+  onToggle: (id: string) => void;
 }
 
 // Compact inline supply chip for the card header. The shared .supply-badge is
@@ -45,7 +46,7 @@ function Metric({
   );
 }
 
-export default function ModelCard({ modelId, latest, isSelected, onToggle }: ModelCardProps) {
+function ModelCard({ modelId, latest, isSelected, onToggle }: ModelCardProps) {
   const label = MODEL_LABELS[modelId] || modelId;
   const color = MODEL_COLORS[modelId] || '#71717a';
 
@@ -54,7 +55,7 @@ export default function ModelCard({ modelId, latest, isSelected, onToggle }: Mod
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25 }}
-      onClick={onToggle}
+      onClick={() => onToggle(modelId)}
       className={clsx('card-surface cursor-pointer', isSelected && 'ring-2')}
       style={
         isSelected
@@ -96,3 +97,5 @@ export default function ModelCard({ modelId, latest, isSelected, onToggle }: Mod
     </motion.div>
   );
 }
+
+export default memo(ModelCard);

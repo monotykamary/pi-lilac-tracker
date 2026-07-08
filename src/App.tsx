@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback, useEffect, useDeferredValue } from 'react';
 import { motion } from 'framer-motion';
 import {
   Sun, Moon, ChartBar, ArrowClockwise,
@@ -14,6 +14,20 @@ import CandlestickCard from './components/CandlestickCard';
 import DataSummary from './components/DataSummary';
 import DiscountMercator from './components/DiscountMercator';
 import DiscountAdvisory from './components/DiscountAdvisory';
+
+// Module-level extractors / formatters / y-domains for the timeline charts.
+// Defined once so their references never change between renders — keeping the
+// charts' React.memo + useMemo deps stable, so a status-poll re-render of App
+// (every ~10s) no longer busts every chart's data memo and re-pivots 6MB.
+const extractDiscount = (m: ModelSnapshot) => m.discount_percent;
+const extractTps = (m: ModelSnapshot) => m.tps;
+const extractTtfb = (m: ModelSnapshot) => m.ttfb_seconds;
+const extractUptime = (m: ModelSnapshot) => m.uptime_pct;
+const fmtInt0 = (v: number) => v.toFixed(0);
+const fmt1 = (v: number) => v.toFixed(1);
+const fmt2 = (v: number) => v.toFixed(2);
+const Y_DOMAIN_DISCOUNT: [number, number] = [0, 100];
+const Y_DOMAIN_UPTIME: [number, number] = [99, 100.1];
 
 // Tailwind class registry — ensures utilities from component files are generated
 // since Tailwind v4's scanner doesn't discover files in src/components/
@@ -31,8 +45,19 @@ function _TailwindSafelist() {
 export default function App() {
   const { theme, toggle } = useTheme();
   const serverStatus = useServerStatus();
-  const { snapshots, loading, error, refetch } = useSnapshots(30000);
+  const { snapshots, loading, error, refetch } = useSnapshots(
+    30000,
+    7,
+    serverStatus?.snapshot_count ?? null,
+  );
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+
+  // Stable model-selection toggle shared by every card/chart that selects a
+  // model. A single useCallback so none of them receive a fresh closure per
+  // render (which would defeat their React.memo).
+  const toggleModel = useCallback((id: string | null) => {
+    setSelectedModel((prev) => (id == null ? null : prev === id ? null : id));
+  }, []);
 
   const modelTimeSeries = useMemo(() => {
     const series: Record<string, { timestamp: string; snapshot: ModelSnapshot; supply_updated_at: string | null }[]> = {};
@@ -49,6 +74,12 @@ export default function App() {
     return series;
   }, [snapshots]);
 
+  // Deferred copy of the series for the heavy below-the-fold charts. On a
+  // data refresh React paints the urgent pass with the previous series (top
+  // of page + cards update immediately) and the charts re-pivot the new series
+  // at lower priority — keeping the ~30s refresh jank-free.
+  const deferredTimeSeries = useDeferredValue(modelTimeSeries);
+
   const latestByModel = useMemo(() => {
     const latest: Record<string, ModelSnapshot | null> = {};
     for (const id of TRACKED_MODELS) {
@@ -59,6 +90,24 @@ export default function App() {
   }, [modelTimeSeries]);
 
   const lastSnapshot: Snapshot | null = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null;
+
+  // Lazy-mount the below-the-fold heavy sections (state timeline, candlestick,
+  // advisory, mercator, the four recharts) after first paint. They all do O(n)
+  // derived work; mounting them in the next idle frame lets the initial render
+  // commit the header + summary + model cards without blocking on pivoting
+  // ~6MB of snapshots. Stays true once set, so later updates run normally.
+  const [heavyReady, setHeavyReady] = useState(false);
+  useEffect(() => {
+    if (heavyReady || snapshots.length === 0) return;
+    const run = () => setHeavyReady(true);
+    const ric = window.requestIdleCallback;
+    if (typeof ric === 'function') {
+      const handle = ric(run, { timeout: 300 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const handle = window.setTimeout(run, 0);
+    return () => window.clearTimeout(handle);
+  }, [heavyReady, snapshots.length]);
 
   return (
     <div className="h-dvh flex flex-col overflow-hidden bg-[#fafafa] dark:bg-[#18181b]">
@@ -160,81 +209,94 @@ export default function App() {
                   modelId={id}
                   latest={latestByModel[id]}
                   isSelected={selectedModel === id}
-                  onToggle={() => setSelectedModel(prev => prev === id ? null : id)}
+                  onToggle={toggleModel}
                 />
               ))}
             </div>
 
-            <StateTimeline
-              timeSeries={modelTimeSeries}
-              selectedModel={selectedModel}
-            />
-
-            <CandlestickCard
-              timeSeries={modelTimeSeries}
-              selectedModel={selectedModel}
-              onSelectModel={(id) => setSelectedModel(prev => (prev === id ? null : id))}
-            />
-
-            <section>
-              <DiscountAdvisory timeSeries={modelTimeSeries} selectedModel={selectedModel} />
-              <div className="mt-6">
-                <DiscountMercator
-                  timeSeries={modelTimeSeries}
+            {heavyReady ? (
+              <>
+                <StateTimeline
+                  timeSeries={deferredTimeSeries}
                   selectedModel={selectedModel}
-                  onSelectModel={(id) => setSelectedModel(prev => (prev === id ? null : id))}
                 />
+
+                <CandlestickCard
+                  timeSeries={deferredTimeSeries}
+                  selectedModel={selectedModel}
+                  onSelectModel={toggleModel}
+                  theme={theme}
+                />
+
+                <section>
+                  <DiscountAdvisory timeSeries={deferredTimeSeries} selectedModel={selectedModel} />
+                  <div className="mt-6">
+                    <DiscountMercator
+                      timeSeries={deferredTimeSeries}
+                      selectedModel={selectedModel}
+                      onSelectModel={toggleModel}
+                    />
+                  </div>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-3 leading-relaxed">
+                    The world's longitudes <em>are</em> time of day — but not yours: each longitude's <span className="font-medium text-zinc-700 dark:text-zinc-300">local-noon time</span> is the UTC moment the sun crosses it (noon at −120° happens at 20:00z, at 0° at 12:00z, at +120° at 04:00z). Lilac's discounts are global events keyed to UTC, so the question this map answers is: <em>where on earth is it local noon when the discount fires?</em> Each snapshot is attributed to the longitude at local noon at that UTC moment, then painted onto the actual continents — so the map IS the data, not a backdrop. Default view is <span className="font-medium text-zinc-700 dark:text-zinc-300">all</span> tiers (each longitude colored by its dominant tier); pick a single tier to isolate it. The Americas light up, because Lilac's discounts cluster in the UTC afternoon/evening = the Americas' daytime. The dashed line is the meridian at local noon right now, sweeping west as the earth rotates. The <span className="font-medium text-zinc-700 dark:text-zinc-300">day/night</span> overlay shades the live night side (longitudes &gt;90° from that noon meridian) with a soft twilight band — the same sweep, made visible as light and dark across the continents; toggle it off for a pure-data view. Continents tint as days accrue.
+                  </p>
+                </section>
+
+                <TimelineChart
+                  title="Discount Rate"
+                  timeSeries={deferredTimeSeries}
+                  selectedModel={selectedModel}
+                  extractValue={extractDiscount}
+                  unit="%"
+                  yDomain={Y_DOMAIN_DISCOUNT}
+                  colorByModel={MODEL_COLORS}
+                  labelByModel={MODEL_LABELS}
+                  formatValue={fmtInt0}
+                  theme={theme}
+                />
+
+                <TimelineChart
+                  title="Throughput (TPS)"
+                  timeSeries={deferredTimeSeries}
+                  selectedModel={selectedModel}
+                  extractValue={extractTps}
+                  unit=" tok/s"
+                  colorByModel={MODEL_COLORS}
+                  labelByModel={MODEL_LABELS}
+                  formatValue={fmt1}
+                  theme={theme}
+                />
+
+                <TimelineChart
+                  title="Time to First Byte"
+                  timeSeries={deferredTimeSeries}
+                  selectedModel={selectedModel}
+                  extractValue={extractTtfb}
+                  unit="s"
+                  colorByModel={MODEL_COLORS}
+                  labelByModel={MODEL_LABELS}
+                  formatValue={fmt2}
+                  theme={theme}
+                />
+
+                <TimelineChart
+                  title="Uptime %"
+                  timeSeries={deferredTimeSeries}
+                  selectedModel={selectedModel}
+                  extractValue={extractUptime}
+                  unit="%"
+                  yDomain={Y_DOMAIN_UPTIME}
+                  colorByModel={MODEL_COLORS}
+                  labelByModel={MODEL_LABELS}
+                  formatValue={fmt2}
+                  theme={theme}
+                />
+              </>
+            ) : (
+              <div className="card-surface p-5 flex items-center justify-center" style={{ minHeight: 120 }}>
+                <div className="w-6 h-6 border-2 border-zinc-200 dark:border-white/[0.06] border-t-accent rounded-full animate-spin" />
               </div>
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mt-3 leading-relaxed">
-                The world's longitudes <em>are</em> time of day — but not yours: each longitude's <span className="font-medium text-zinc-700 dark:text-zinc-300">local-noon time</span> is the UTC moment the sun crosses it (noon at −120° happens at 20:00z, at 0° at 12:00z, at +120° at 04:00z). Lilac's discounts are global events keyed to UTC, so the question this map answers is: <em>where on earth is it local noon when the discount fires?</em> Each snapshot is attributed to the longitude at local noon at that UTC moment, then painted onto the actual continents — so the map IS the data, not a backdrop. Default view is <span className="font-medium text-zinc-700 dark:text-zinc-300">all</span> tiers (each longitude colored by its dominant tier); pick a single tier to isolate it. The Americas light up, because Lilac's discounts cluster in the UTC afternoon/evening = the Americas' daytime. The dashed line is the meridian at local noon right now, sweeping west as the earth rotates. The <span className="font-medium text-zinc-700 dark:text-zinc-300">day/night</span> overlay shades the live night side (longitudes &gt;90° from that noon meridian) with a soft twilight band — the same sweep, made visible as light and dark across the continents; toggle it off for a pure-data view. Continents tint as days accrue.
-              </p>
-            </section>
-
-            <TimelineChart
-              title="Discount Rate"
-              timeSeries={modelTimeSeries}
-              selectedModel={selectedModel}
-              extractValue={(m) => m.discount_percent}
-              unit="%"
-              yDomain={[0, 100]}
-              colorByModel={MODEL_COLORS}
-              labelByModel={MODEL_LABELS}
-              formatValue={(v) => v.toFixed(0)}
-            />
-
-            <TimelineChart
-              title="Throughput (TPS)"
-              timeSeries={modelTimeSeries}
-              selectedModel={selectedModel}
-              extractValue={(m) => m.tps}
-              unit=" tok/s"
-              colorByModel={MODEL_COLORS}
-              labelByModel={MODEL_LABELS}
-              formatValue={(v) => v.toFixed(1)}
-            />
-
-            <TimelineChart
-              title="Time to First Byte"
-              timeSeries={modelTimeSeries}
-              selectedModel={selectedModel}
-              extractValue={(m) => m.ttfb_seconds}
-              unit="s"
-              colorByModel={MODEL_COLORS}
-              labelByModel={MODEL_LABELS}
-              formatValue={(v) => v.toFixed(2)}
-            />
-
-            <TimelineChart
-              title="Uptime %"
-              timeSeries={modelTimeSeries}
-              selectedModel={selectedModel}
-              extractValue={(m) => m.uptime_pct}
-              unit="%"
-              yDomain={[99, 100.1]}
-              colorByModel={MODEL_COLORS}
-              labelByModel={MODEL_LABELS}
-              formatValue={(v) => v.toFixed(2)}
-            />
+            )}
           </div>
         )}
       </div>

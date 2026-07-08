@@ -1,4 +1,4 @@
-import { useMemo, useState, useEffect, useId } from 'react';
+import { memo, useMemo, useState, useEffect, useId } from 'react';
 import { SunHorizon, Sun, Moon, ArrowUpRight } from '@phosphor-icons/react';
 import { TRACKED_MODELS, MODEL_LABELS, discountColor } from '../types';
 import type { DiscountPoint } from './DiscountMercator';
@@ -337,7 +337,7 @@ const STARS: { x: number; y: number; r: number; d: number }[] = [
   { x: 30, y: 112, r: 0.7, d: 1.1 }, { x: 170, y: 116, r: 0.7, d: 1.4 },
 ];
 
-export default function DiscountAdvisory({ timeSeries, selectedModel }: Props) {
+function DiscountAdvisory({ timeSeries, selectedModel }: Props) {
   // Ticks every 10s so the sun/moon hand glides smoothly (CSS transition carries
   // the motion between ticks) instead of jumping minute-to-minute.
   const [now, setNow] = useState(() => new Date());
@@ -614,3 +614,5 @@ export default function DiscountAdvisory({ timeSeries, selectedModel }: Props) {
     </div>
   );
 }
+
+export default memo(DiscountAdvisory);

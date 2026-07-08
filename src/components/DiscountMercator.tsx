@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useId, useEffect } from 'react';
+import { memo, useMemo, useRef, useState, useId, useEffect } from 'react';
 import { GlobeSimple, Funnel, Sun, Moon } from '@phosphor-icons/react';
 import {
   TRACKED_MODELS, MODEL_LABELS, MODEL_COLORS, discountColor,
@@ -278,7 +278,7 @@ function buildActivity(
   return { cols, tzBins, maxCountCols, maxCountTz, hasData: any };
 }
 
-export default function DiscountMercator({
+function DiscountMercator({
   timeSeries, selectedModel, onSelectModel,
 }: DiscountMercatorProps) {
   const gid = 'merc-' + useId().replace(/:/g, '');
@@ -995,3 +995,5 @@ export default function DiscountMercator({
     </div>
   );
 }
+
+export default memo(DiscountMercator);
